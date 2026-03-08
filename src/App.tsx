@@ -316,8 +316,9 @@ interface AuthModalProps {
   onSuccess:(u:User)=>void; onNotify:(m:string)=>void;
   serverUsers: ServerUser[];
   onlineMode: boolean;
+  wsRef: React.MutableRefObject<WebSocket|null>;
 }
-function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineMode}:AuthModalProps) {
+function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineMode,wsRef}:AuthModalProps) {
   const [mode,setMode]         = useState<'login'|'register'>(initType);
   const [name,setName]         = useState('');
   const [email,setEmail]       = useState('');
@@ -346,13 +347,33 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
     return Object.keys(err).length===0;
   };
 
+  // Promise wrapper for WebSocket auth
+  const wsAuth = (payload: object, okType: string, errType: string): Promise<{ok:boolean;data?:Record<string,unknown>;error?:string}> => {
+    return new Promise((resolve) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        resolve({ok:false, error:'нет WS'});
+        return;
+      }
+      const handler = (ev: MessageEvent) => {
+        let msg: Record<string,unknown>;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === okType) { ws.removeEventListener('message', handler); resolve({ok:true, data:msg}); }
+        else if (msg.type === errType) { ws.removeEventListener('message', handler); resolve({ok:false, error:(msg.message as string)||'Ошибка'}); }
+      };
+      ws.addEventListener('message', handler);
+      ws.send(JSON.stringify(payload));
+      setTimeout(()=>{ ws.removeEventListener('message', handler); resolve({ok:false,error:'timeout'}); }, 8000);
+    });
+  };
+
   const handleSubmit=async(e:React.FormEvent)=>{
     e.preventDefault();
     if(!validate()) return;
     setLoading(true);
 
     if(mode==='register'){
-      const user:User={
+      const newUser:User={
         id:'u_'+Date.now()+'_'+Math.random().toString(36).slice(2),
         name:name.trim(), email:email.trim().toLowerCase(),
         avatar:GRADIENTS[Math.floor(Math.random()*GRADIENTS.length)],
@@ -360,58 +381,66 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
         joinedAt:new Date().toLocaleDateString('ru-RU'),
       };
 
-      if(onlineMode){
-        const res = await apiFetch('/api/register', {
-          method:'POST',
-          body: JSON.stringify({user}),
-        });
+      if(onlineMode && wsRef.current?.readyState === WebSocket.OPEN){
+        // Try WebSocket first (avoids HTML response issue)
+        const result = await wsAuth({type:'REGISTER', user:newUser}, 'REGISTER_OK', 'REGISTER_ERROR');
+        if(result.ok){
+          const su = (result.data as {user:ServerUser}).user;
+          const finalUser:User = {...newUser, id:su.id, tracksCount:su.tracksCount||0};
+          setLoading(false); onSuccess(finalUser); onClose(); onNotify('🎉 Добро пожаловать в ClaudMusic!');
+        } else if(result.error === 'timeout' || result.error === 'нет WS'){
+          // WS failed → try REST
+          const res = await apiFetch('/api/register',{method:'POST',body:JSON.stringify({user:newUser})});
+          setLoading(false);
+          if(res.error){ setErrors({name:res.error}); return; }
+          const su = res.user as ServerUser;
+          onSuccess({...newUser, id:su.id, tracksCount:su.tracksCount||0}); onClose(); onNotify('🎉 Добро пожаловать в ClaudMusic!');
+        } else {
+          setLoading(false); setErrors({name:result.error||'Ошибка'}); return;
+        }
+      } else if(onlineMode){
+        // No WS → REST only
+        const res = await apiFetch('/api/register',{method:'POST',body:JSON.stringify({user:newUser})});
         setLoading(false);
         if(res.error){ setErrors({name:res.error}); return; }
-        // Use server-returned user data
-        const serverUser = res.user as ServerUser;
-        const finalUser:User = {...user, id:serverUser.id, tracksCount:serverUser.tracksCount||0};
-        onSuccess(finalUser);
-        onClose();
-        onNotify('🎉 Добро пожаловать в ClaudMusic!');
+        const su = res.user as ServerUser;
+        onSuccess({...newUser, id:su.id, tracksCount:su.tracksCount||0}); onClose(); onNotify('🎉 Добро пожаловать в ClaudMusic!');
       } else {
-        // Offline mode: just save locally
-        setTimeout(()=>{
-          setLoading(false);
-          onSuccess(user);
-          onClose();
-          onNotify('🎉 Аккаунт создан (офлайн режим)!');
-        },400);
+        setTimeout(()=>{ setLoading(false); onSuccess(newUser); onClose(); onNotify('🎉 Аккаунт создан!'); }, 400);
       }
 
     } else {
-      // Login
-      if(onlineMode){
-        const res = await apiFetch('/api/login', {
-          method:'POST',
-          body: JSON.stringify({email:email.trim().toLowerCase()}),
-        });
+      // LOGIN
+      const emailLower = email.trim().toLowerCase();
+
+      if(onlineMode && wsRef.current?.readyState === WebSocket.OPEN){
+        const result = await wsAuth({type:'LOGIN', email:emailLower}, 'LOGIN_OK', 'LOGIN_ERROR');
+        if(result.ok){
+          const su = (result.data as {user:ServerUser}).user;
+          const loggedUser:User={id:su.id,name:su.name,email:su.email,avatar:GRADIENTS[Math.abs(su.name.charCodeAt(0)%GRADIENTS.length)],role:su.role||'listener',followers:su.followers||0,following:0,tracksCount:su.tracksCount||0,verified:true,joinedAt:su.joinedAt};
+          setLoading(false); onSuccess(loggedUser); onClose(); onNotify(`👋 С возвращением, ${su.name}!`);
+        } else if(result.error === 'timeout' || result.error === 'нет WS'){
+          const res = await apiFetch('/api/login',{method:'POST',body:JSON.stringify({email:emailLower})});
+          setLoading(false);
+          if(res.error){ setErrors({email:res.error}); return; }
+          const su = res.user as ServerUser;
+          const loggedUser:User={id:su.id,name:su.name,email:su.email,avatar:GRADIENTS[Math.abs(su.name.charCodeAt(0)%GRADIENTS.length)],role:su.role||'listener',followers:su.followers||0,following:0,tracksCount:su.tracksCount||0,verified:true,joinedAt:su.joinedAt};
+          onSuccess(loggedUser); onClose(); onNotify(`👋 С возвращением, ${su.name}!`);
+        } else {
+          setLoading(false); setErrors({email:result.error||'Аккаунт не найден'}); return;
+        }
+      } else if(onlineMode){
+        const res = await apiFetch('/api/login',{method:'POST',body:JSON.stringify({email:emailLower})});
         setLoading(false);
         if(res.error){ setErrors({email:res.error}); return; }
         const su = res.user as ServerUser;
-        const user:User={
-          id:su.id, name:su.name, email:su.email,
-          avatar:GRADIENTS[Math.abs(su.name.charCodeAt(0)%GRADIENTS.length)],
-          role:su.role||'listener', followers:su.followers||0, following:0,
-          tracksCount:su.tracksCount||0, verified:true, joinedAt:su.joinedAt,
-        };
-        onSuccess(user);
-        onClose();
-        onNotify(`👋 С возвращением, ${su.name}!`);
+        const loggedUser:User={id:su.id,name:su.name,email:su.email,avatar:GRADIENTS[Math.abs(su.name.charCodeAt(0)%GRADIENTS.length)],role:su.role||'listener',followers:su.followers||0,following:0,tracksCount:su.tracksCount||0,verified:true,joinedAt:su.joinedAt};
+        onSuccess(loggedUser); onClose(); onNotify(`👋 С возвращением, ${su.name}!`);
       } else {
-        // Offline: find in local cache
-        const found = serverUsers.find(u=>u.email.toLowerCase()===email.trim().toLowerCase());
+        const found = serverUsers.find(u=>u.email.toLowerCase()===emailLower);
         setLoading(false);
-        if(found){
-          const user:User={id:found.id,name:found.name,email:found.email,avatar:GRADIENTS[0],role:found.role||'listener',followers:found.followers||0,following:0,tracksCount:found.tracksCount||0,verified:true,joinedAt:found.joinedAt};
-          onSuccess(user); onClose(); onNotify(`👋 С возвращением, ${found.name}!`);
-        } else {
-          setErrors({email:'Аккаунт не найден. Сервер недоступен.'});
-        }
+        if(found){ const loggedUser:User={id:found.id,name:found.name,email:found.email,avatar:GRADIENTS[0],role:found.role||'listener',followers:found.followers||0,following:0,tracksCount:found.tracksCount||0,verified:true,joinedAt:found.joinedAt}; onSuccess(loggedUser); onClose(); onNotify(`👋 С возвращением, ${found.name}!`); }
+        else setErrors({email:'Аккаунт не найден. Сервер недоступен.'});
       }
     }
   };
@@ -1886,7 +1915,7 @@ export function App() {
 
       {/* MODALS */}
       {(modal==='login'||modal==='register')&&(
-        <AuthModal type={modal} onClose={()=>setModal(null)} onSuccess={handleLogin} onNotify={notify} serverUsers={serverUsers} onlineMode={online}/>
+        <AuthModal type={modal} onClose={()=>setModal(null)} onSuccess={handleLogin} onNotify={notify} serverUsers={serverUsers} onlineMode={online} wsRef={wsRef}/>
       )}
       {modal==='upload'&&user&&(
         <UploadModal onClose={()=>setModal(null)} onUpload={handleUpload} onNotify={notify} userName={user.name} userId={user.id} onlineMode={online}/>
