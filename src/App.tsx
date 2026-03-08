@@ -66,6 +66,8 @@ const SECTIONS = [
 const LS_USER   = 'cm_user_v9';
 const LS_NOTIFS = 'cm_notifs_v9';
 const LS_FOLLOW = 'cm_follow_v9';
+const LS_LIKED  = 'cm_liked_v9';   // Set of track IDs the user liked
+const LS_REPOST = 'cm_repost_v9';  // Set of track IDs the user reposted
 const loadJson  = <T,>(k: string, fb: T): T => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) as T : fb; } catch { return fb; } };
 const saveJson  = <T,>(k: string, v: T) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /**/ } };
 
@@ -187,8 +189,8 @@ function AnimatedWave() {
 function Toast({msg,onDone}:{msg:string;onDone:()=>void}) {
   useEffect(()=>{const t=setTimeout(onDone,3200);return()=>clearTimeout(t);},[onDone]);
   return (
-    <div className="glass-strong" style={{padding:'12px 16px',borderRadius:12,fontSize:'0.82rem',fontWeight:600,color:'#f8fafc',border:'1px solid rgba(139,92,246,0.3)',display:'flex',alignItems:'center',gap:9,minWidth:'220px',maxWidth:'340px',animation:'fadeInUp 0.3s ease',boxShadow:'0 8px 32px rgba(0,0,0,0.4)',pointerEvents:'all'}}>
-      <div style={{width:6,height:6,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',flexShrink:0}}/>
+    <div style={{padding:'11px 16px',borderRadius:14,fontSize:'0.82rem',fontWeight:600,color:'#f1f5f9',display:'flex',alignItems:'center',gap:9,minWidth:'210px',maxWidth:'340px',animation:'fadeInUp 0.3s ease',pointerEvents:'all',background:'rgba(10,10,22,0.94)',backdropFilter:'blur(24px)',WebkitBackdropFilter:'blur(24px)',border:'1px solid rgba(139,92,246,0.28)',boxShadow:'0 8px 40px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+      <div style={{width:7,height:7,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',flexShrink:0,boxShadow:'0 0 8px rgba(139,92,246,0.7)'}}/>
       {msg}
     </div>
   );
@@ -242,7 +244,7 @@ function NotificationBell({notifications,onClear,onMarkRead,onNotifClick}:{notif
         {unread>0&&<div style={{position:'absolute',top:-4,right:-4,width:17,height:17,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',fontSize:'0.58rem',fontWeight:800,color:'white',display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0a0a'}}>{unread>9?'9+':unread}</div>}
       </button>
       {open&&(
-        <div className="glass-strong" style={{position:'absolute',top:'110%',right:0,zIndex:300,width:300,maxHeight:420,borderRadius:16,border:'1px solid rgba(255,255,255,0.1)',display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeInUp 0.2s ease'}}>
+        <div style={{position:'absolute',top:'110%',right:0,zIndex:300,width:300,maxHeight:420,borderRadius:16,border:'1px solid rgba(255,255,255,0.09)',display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 16px 60px rgba(0,0,0,0.55),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
           <div style={{padding:'13px 15px 9px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.83rem'}}>Уведомления</span>
             {notifications.length>0&&<button onClick={()=>{onClear();setOpen(false);}} style={{background:'none',border:'none',cursor:'pointer',color:'#475569',fontSize:'0.7rem',fontFamily:'Inter,sans-serif'}}>Очистить</button>}
@@ -385,8 +387,8 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
   };
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:20,background:'rgba(0,0,0,0.78)',backdropFilter:'blur(14px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="glass-strong" style={{width:'100%',maxWidth:400,borderRadius:24,padding:'32px 28px',border:'1px solid rgba(255,255,255,0.1)',position:'relative'}}>
+    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:20,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:400,borderRadius:24,padding:'32px 28px',position:'relative',background:'rgba(10,10,22,0.94)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
         <button onClick={onClose} style={{position:'absolute',top:14,right:14,background:'rgba(255,255,255,0.06)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
@@ -540,8 +542,8 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
   const genreList=['Electronic','Hip-Hop','Rock','Lo-Fi','Jazz','Classical','Pop','Indie','Synthwave','R&B','Metal','Folk','Другое'];
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(0,0,0,0.78)',backdropFilter:'blur(14px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&!uploading&&onClose()}>
-      <div className="glass-strong" style={{width:'100%',maxWidth:500,borderRadius:24,padding:'28px 24px',border:'1px solid rgba(255,255,255,0.1)',position:'relative',margin:'auto'}}>
+    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&!uploading&&onClose()}>
+      <div style={{width:'100%',maxWidth:500,borderRadius:24,padding:'28px 24px',position:'relative',margin:'auto',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.65),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
         {!uploading&&<button onClick={onClose} style={{position:'absolute',top:14,right:14,background:'rgba(255,255,255,0.06)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>}
@@ -668,8 +670,8 @@ function CommentsModal({track,user,onClose,onUpdateTrack,onRequestLogin,onlineMo
   const startReply=(c:Comment)=>{setReplyTo({id:c.id,userName:c.userName,text:c.text});setTimeout(()=>inputRef.current?.focus(),50);};
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.65)',backdropFilter:'blur(8px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="glass-strong" style={{width:'100%',maxWidth:600,borderRadius:'22px 22px 0 0',border:'1px solid rgba(255,255,255,0.1)',maxHeight:'80vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.3s ease'}}>
+    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(4,4,12,0.78)',backdropFilter:'blur(10px)',WebkitBackdropFilter:'blur(10px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:600,borderRadius:'22px 22px 0 0',maxHeight:'82vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 -8px 60px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
         <div style={{padding:'14px 20px 11px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
           <div style={{display:'flex',alignItems:'center',gap:9}}>
             <CoverArt gradient={track.coverGradient} image={track.coverImage} size={36}/>
@@ -772,8 +774,8 @@ function ProfileModal({artist,tracks,currentUser,onClose,onPlayTrack,onFollowTog
   const totalPlays=artistTracks.reduce((s,t)=>s+t.plays,0);
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[onClose]);
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(0,0,0,0.78)',backdropFilter:'blur(14px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="glass-strong" style={{width:'100%',maxWidth:540,borderRadius:24,border:'1px solid rgba(255,255,255,0.1)',overflow:'hidden',margin:'auto',animation:'fadeInUp 0.3s ease'}}>
+    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:540,borderRadius:24,border:'1px solid rgba(255,255,255,0.09)',overflow:'hidden',margin:'auto',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 24px 80px rgba(0,0,0,0.65),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
         <div style={{height:90,background:'linear-gradient(135deg,rgba(139,92,246,0.3),rgba(59,130,246,0.2))',position:'relative'}}>
           <button onClick={onClose} style={{position:'absolute',top:12,right:12,background:'rgba(0,0,0,0.5)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -927,7 +929,7 @@ function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onD
   return (
     <div className="player-bar" style={{position:'fixed',bottom:0,left:0,right:0,zIndex:200}}>
       {/* Mobile */}
-      <div className="show-mobile" style={{padding:'8px 12px 12px',display:'none',flexDirection:'column',gap:6}}>
+      <div className="show-mobile" style={{padding:'10px 14px 14px',display:'none',flexDirection:'column',gap:8}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <CoverArt gradient={track.coverGradient} image={track.coverImage} size={40}/>
           <div style={{flex:1,minWidth:0}}>
@@ -1007,7 +1009,7 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
   const handleNavClick=(id:string)=>{onNavClick(id);setMenuOpen(false);};
   const handleSearchKey=(e:React.KeyboardEvent<HTMLInputElement>)=>{if(e.key==='Enter'){onSearchSubmit(inputVal.trim());}if(e.key==='Escape'){setInputVal('');onSearchSubmit('');}};
   return (
-    <header style={{position:'fixed',top:0,left:0,right:0,zIndex:100,borderBottom:'1px solid rgba(255,255,255,0.06)'}} className="glass-strong">
+    <header style={{position:'fixed',top:0,left:0,right:0,zIndex:100,borderBottom:'1px solid rgba(255,255,255,0.07)',background:'rgba(8,8,18,0.88)',backdropFilter:'blur(40px) saturate(180%)',WebkitBackdropFilter:'blur(40px) saturate(180%)',boxShadow:'0 1px 0 rgba(255,255,255,0.04),0 4px 24px rgba(0,0,0,0.3)'}}>
       <div style={{maxWidth:1280,margin:'0 auto',padding:'0 20px',height:62,display:'flex',alignItems:'center',gap:14}}>
         <div onClick={()=>handleNavClick('hero')} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',flexShrink:0}}>
           <div style={{width:34,height:34,background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 14px rgba(139,92,246,0.35)'}}>
@@ -1047,7 +1049,7 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
                   {user.name[0].toUpperCase()}
                 </div>
                 {showUser&&(
-                  <div className="glass-strong" style={{position:'absolute',top:'115%',right:0,borderRadius:16,padding:8,border:'1px solid rgba(255,255,255,0.1)',minWidth:210,zIndex:201,animation:'fadeInUp 0.2s ease'}}>
+                  <div style={{position:'absolute',top:'115%',right:0,borderRadius:16,padding:8,minWidth:210,zIndex:201,animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 16px 60px rgba(0,0,0,0.55),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
                     <div style={{padding:'11px 13px',borderBottom:'1px solid rgba(255,255,255,0.06)',marginBottom:5}}>
                       <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                         <span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.85rem'}}>{user.name}</span>
@@ -1080,7 +1082,7 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
         </div>
       </div>
       {menuOpen&&(
-        <div className="glass-strong" style={{padding:'8px 20px 16px',borderTop:'1px solid rgba(255,255,255,0.06)',display:'flex',flexDirection:'column',gap:2}}>
+        <div style={{padding:'8px 20px 16px',borderTop:'1px solid rgba(255,255,255,0.07)',display:'flex',flexDirection:'column',gap:2,background:'rgba(8,8,18,0.97)',backdropFilter:'blur(40px)',WebkitBackdropFilter:'blur(40px)'}}>
           {SECTIONS.map(n=>(
             <button key={n.id} onClick={()=>handleNavClick(n.id)} style={{background:activeSection===n.id?'rgba(139,92,246,0.1)':'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',fontSize:'0.88rem',fontWeight:activeSection===n.id?700:500,color:activeSection===n.id?'#f8fafc':'#64748b',padding:'10px 11px',borderRadius:8,textAlign:'left',width:'100%',transition:'all 0.2s'}}>{n.label}</button>
           ))}
@@ -1103,7 +1105,7 @@ interface TrackCardProps {track:Track;isCurrentPlaying:boolean;onPlay:()=>void;o
 function TrackCard({track,isCurrentPlaying,onPlay,onLike,onRepost,onComment,onDownload,onArtistClick,onDelete}:TrackCardProps) {
   const [hov,setHov]=useState(false);
   return (
-    <div className="track-card glass" style={{borderRadius:18,padding:16,border:`1px solid ${isCurrentPlaying?'rgba(139,92,246,0.4)':'rgba(255,255,255,0.06)'}`,minWidth:190,maxWidth:210,flexShrink:0,boxShadow:isCurrentPlaying?'0 0 28px rgba(139,92,246,0.12)':'none',transition:'border-color 0.3s'}}>
+    <div className="track-card" style={{borderRadius:18,padding:16,border:`1px solid ${isCurrentPlaying?'rgba(139,92,246,0.45)':'rgba(255,255,255,0.07)'}`,minWidth:190,maxWidth:210,flexShrink:0,background:isCurrentPlaying?'rgba(18,18,38,0.9)':'rgba(14,14,28,0.82)',backdropFilter:'blur(20px) saturate(160%)',WebkitBackdropFilter:'blur(20px) saturate(160%)',boxShadow:isCurrentPlaying?'0 0 36px rgba(139,92,246,0.18),0 4px 20px rgba(0,0,0,0.4)':'0 4px 20px rgba(0,0,0,0.3)',transition:'all 0.3s'}}>
       <div style={{position:'relative',marginBottom:11}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}>
         <div style={{width:'100%',aspectRatio:'1',borderRadius:12,background:track.coverGradient,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 6px 20px rgba(0,0,0,0.3)',overflow:'hidden'}}>
           {track.coverImage?<img src={track.coverImage} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<svg width="30" height="30" viewBox="0 0 24 24" fill="rgba(255,255,255,0.3)"><path d="M9 18V5l12-2v13M9 18c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2zm12-2c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2z"/></svg>}
@@ -1154,7 +1156,7 @@ function ReleaseRow({track,isCurrentPlaying,onPlay,onLike,onRepost,onComment,onD
   const [hov,setHov]=useState(false);
   const hasAudio=!!(track.audioUrl||track.serverAudio);
   return (
-    <div className="track-card glass" style={{display:'flex',alignItems:'center',gap:12,padding:'11px 14px',borderRadius:13,border:`1px solid ${isCurrentPlaying?'rgba(139,92,246,0.4)':'rgba(255,255,255,0.06)'}`,boxShadow:isCurrentPlaying?'0 0 18px rgba(139,92,246,0.08)':'none',transition:'border-color 0.3s'}}>
+    <div className="track-card" style={{display:'flex',alignItems:'center',gap:12,padding:'11px 14px',borderRadius:14,border:`1px solid ${isCurrentPlaying?'rgba(139,92,246,0.45)':'rgba(255,255,255,0.07)'}`,background:isCurrentPlaying?'rgba(18,18,38,0.88)':'rgba(14,14,28,0.78)',backdropFilter:'blur(16px) saturate(150%)',WebkitBackdropFilter:'blur(16px) saturate(150%)',boxShadow:isCurrentPlaying?'0 0 28px rgba(139,92,246,0.14),0 2px 12px rgba(0,0,0,0.35)':'0 2px 12px rgba(0,0,0,0.25)',transition:'all 0.3s'}}>
       {rank!==undefined&&<div style={{width:22,textAlign:'center',fontSize:'0.7rem',color:'#334155',fontWeight:700,flexShrink:0}}>#{rank+1}</div>}
       <div style={{position:'relative',flexShrink:0}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}>
         <CoverArt gradient={track.coverGradient} image={track.coverImage} size={42}/>
@@ -1231,7 +1233,7 @@ function SearchResults({query,tracks,currentTrackId,isPlaying,onPlay,onLike,onRe
   const results=tracks.filter(t=>t.title.toLowerCase().includes(q)||t.artist.toLowerCase().includes(q)||t.genre.toLowerCase().includes(q));
   return (
     <div style={{position:'fixed',inset:0,zIndex:250,background:'rgba(0,0,0,0.72)',backdropFilter:'blur(10px)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'72px 20px 20px'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="glass-strong" style={{width:'100%',maxWidth:620,borderRadius:18,border:'1px solid rgba(255,255,255,0.1)',overflow:'hidden',maxHeight:'72vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.25s ease'}}>
+      <div style={{width:'100%',maxWidth:620,borderRadius:18,border:'1px solid rgba(255,255,255,0.09)',overflow:'hidden',maxHeight:'72vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.25s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 24px 80px rgba(0,0,0,0.6)'}}>
         <div style={{padding:'14px 18px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div><span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.88rem'}}>«{query}»</span><span style={{fontSize:'0.72rem',color:'#64748b',marginLeft:9}}>{results.length} результатов</span></div>
           <button onClick={onClose} style={{background:'rgba(255,255,255,0.06)',border:'none',width:28,height:28,borderRadius:7,cursor:'pointer',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center'}}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -1271,15 +1273,19 @@ export function App() {
   const [searchQuery,setSearchQuery]   = useState('');
   const [showSearch,setShowSearch]     = useState(false);
   const [followingIds,setFollowingIds] = useState<string[]>(()=>loadJson(LS_FOLLOW,[]));
+  const [likedIds,setLikedIds]         = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_LIKED,[])));
+  const [repostedIds,setRepostedIds]   = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_REPOST,[])));
 
   const wsRef     = useRef<WebSocket|null>(null);
   const reconnRef = useRef<ReturnType<typeof setTimeout>|null>(null);
   const pollRef   = useRef<ReturnType<typeof setInterval>|null>(null);
 
-  // Persist user & notifications
+  // Persist user & notifications & likes/reposts
   useEffect(()=>{ saveJson(LS_USER,user); },[user]);
   useEffect(()=>{ saveJson(LS_NOTIFS,notifications); },[notifications]);
   useEffect(()=>{ saveJson(LS_FOLLOW,followingIds); },[followingIds]);
+  useEffect(()=>{ saveJson(LS_LIKED,[...likedIds]); },[likedIds]);
+  useEffect(()=>{ saveJson(LS_REPOST,[...repostedIds]); },[repostedIds]);
 
   const notify=useCallback((msg:string)=>{const id=Date.now();setToasts(p=>[...p,{id,msg}]);},[]);
   const removeToast=useCallback((id:number)=>setToasts(p=>p.filter(t=>t.id!==id)),[]);
@@ -1321,14 +1327,16 @@ export function App() {
             setServerUsers((msg.users as ServerUser[])||[]);
             setTracks(prev=>{
               const localMap=new Map(prev.map(t=>[t.id,t]));
+              const lk=new Set(loadJson<string[]>(LS_LIKED,[]));
+              const rp=new Set(loadJson<string[]>(LS_REPOST,[]));
               return st.map((s:Track)=>{
                 const local=localMap.get(s.id);
                 return {
                   ...s,
                   audioUrl:    local?.audioUrl,
                   serverAudio: s.serverAudio||local?.serverAudio,
-                  liked:       local?.liked??false,
-                  reposted:    local?.reposted??false,
+                  liked:       lk.has(s.id),
+                  reposted:    rp.has(s.id),
                   coverImage:  s.coverImage||local?.coverImage,
                   waveform:    local?.waveform||s.waveform||genWave(s.id.charCodeAt(2)||42),
                 };
@@ -1400,14 +1408,16 @@ export function App() {
       setServerUsers((data.users as ServerUser[])||[]);
       setTracks(prev=>{
         const localMap=new Map(prev.map((t:Track)=>[t.id,t]));
+        const lk=new Set(loadJson<string[]>(LS_LIKED,[]));
+        const rp=new Set(loadJson<string[]>(LS_REPOST,[]));
         const merged:Track[]=serverTracks.map((s:Track)=>{
           const local=localMap.get(s.id);
           return {
             ...s,
             audioUrl:    local?.audioUrl,
             serverAudio: s.serverAudio||local?.serverAudio,
-            liked:       local?.liked??false,
-            reposted:    local?.reposted??false,
+            liked:       lk.has(s.id),
+            reposted:    rp.has(s.id),
             coverImage:  s.coverImage||local?.coverImage,
             waveform:    local?.waveform||s.waveform||genWave(s.id.charCodeAt(2)||42),
             comments:    s.comments||[],
@@ -1465,6 +1475,13 @@ export function App() {
 
   const handleLike=useCallback(async(id:string)=>{
     if(!user){notify('👆 Войди, чтобы ставить лайки');setModal('login');return;}
+    // Toggle liked state — persist to LS immediately so polls don't reset it
+    setLikedIds(prev=>{
+      const next=new Set(prev);
+      if(next.has(id)) next.delete(id); else next.add(id);
+      saveJson(LS_LIKED,[...next]);
+      return next;
+    });
     setTracks(ts=>ts.map(t=>t.id===id?{...t,liked:!t.liked,likes:t.liked?t.likes-1:t.likes+1}:t));
     if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'LIKE',trackId:id,userId:user.id}));}
     else{await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'LIKE',trackId:id,userId:user.id})});}
@@ -1472,6 +1489,13 @@ export function App() {
 
   const handleRepost=useCallback(async(id:string)=>{
     if(!user){notify('👆 Войди, чтобы делать репосты');setModal('login');return;}
+    // Toggle reposted state — persist to LS immediately so polls don't reset it
+    setRepostedIds(prev=>{
+      const next=new Set(prev);
+      if(next.has(id)) next.delete(id); else next.add(id);
+      saveJson(LS_REPOST,[...next]);
+      return next;
+    });
     setTracks(ts=>ts.map(t=>t.id===id?{...t,reposted:!t.reposted,reposts:t.reposted?t.reposts-1:t.reposts+1}:t));
     if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'REPOST',trackId:id,userId:user.id}));}
     else{await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'REPOST',trackId:id,userId:user.id})});}
@@ -1616,7 +1640,7 @@ export function App() {
   ];
 
   return (
-    <div style={{minHeight:'100vh',background:'#0a0a0a',position:'relative'}}>
+    <div style={{minHeight:'100vh',background:'linear-gradient(160deg,#080812 0%,#0a0818 30%,#060610 70%,#080810 100%)',position:'relative'}}>
       <ParticleCanvas/>
       <Header
         user={user} onOpenModal={t=>{if(t==='upload')openUpload();else setModal(t);}}
@@ -1756,7 +1780,7 @@ export function App() {
             </div>
             <div className="reveal" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:12}}>
               {WHY_CARDS.map(card=>(
-                <div key={card.title} className="glass track-card" style={{borderRadius:18,padding:22,border:'1px solid rgba(255,255,255,0.06)',position:'relative',overflow:'hidden'}}>
+                <div key={card.title} className="track-card" style={{borderRadius:18,padding:22,border:'1px solid rgba(255,255,255,0.08)',position:'relative',overflow:'hidden',background:'rgba(14,14,28,0.82)',backdropFilter:'blur(20px) saturate(160%)',WebkitBackdropFilter:'blur(20px) saturate(160%)',boxShadow:'0 4px 24px rgba(0,0,0,0.3)'}}>
                   <div style={{position:'absolute',top:-12,right:-12,width:70,height:70,borderRadius:'50%',background:`radial-gradient(circle,${card.color}22,transparent)`,pointerEvents:'none'}}/>
                   <div style={{fontSize:'1.6rem',marginBottom:9}}>{card.icon}</div>
                   <div style={{fontWeight:800,color:'#f8fafc',fontSize:'0.9rem',marginBottom:6}}>{card.title}</div>
