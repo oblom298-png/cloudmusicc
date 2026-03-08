@@ -10,7 +10,6 @@ interface Comment {
   id: string; userId: string; userName: string; userAvatar: string; text: string;
   timestamp: string; likes: number; liked: boolean; isAuthor?: boolean;
   replyTo?: { id: string; userName: string; text: string };
-  _likedBy?: string[];
 }
 interface Track {
   id: string; title: string; artist: string; artistId: string; genre: string;
@@ -18,8 +17,8 @@ interface Track {
   coverGradient: string; coverImage?: string; verified: boolean; isNew?: boolean;
   description: string; liked: boolean; reposted: boolean; comments: Comment[];
   waveform: number[]; isUserTrack: boolean;
-  audioUrl?: string;    // local blob (uploader's browser only)
-  serverAudio?: string; // server URL e.g. /api/audio/trackId (works on any device)
+  audioUrl?: string;
+  serverAudio?: string;
 }
 type ModalType = 'login' | 'register' | 'upload' | null;
 interface AppNotification {
@@ -63,13 +62,19 @@ const SECTIONS = [
 ];
 
 // ─── LOCAL STORAGE ────────────────────────────────────────────────────────────
-const LS_USER   = 'cm_user_v9';
-const LS_NOTIFS = 'cm_notifs_v9';
-const LS_FOLLOW = 'cm_follow_v9';
-const LS_LIKED  = 'cm_liked_v9';   // Set of track IDs the user liked
-const LS_REPOST = 'cm_repost_v9';  // Set of track IDs the user reposted
-const loadJson  = <T,>(k: string, fb: T): T => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) as T : fb; } catch { return fb; } };
-const saveJson  = <T,>(k: string, v: T) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /**/ } };
+const LS_USER    = 'cm_user_v10';
+const LS_NOTIFS  = 'cm_notifs_v10';
+const LS_FOLLOW  = 'cm_follow_v10';
+const LS_LIKED   = 'cm_liked_v10';
+const LS_REPOST  = 'cm_repost_v10';
+const LS_TRACKS  = 'cm_tracks_v10';   // ← backup of track metadata (no audio)
+
+const loadJson = <T,>(k: string, fb: T): T => {
+  try { const v = localStorage.getItem(k); return v ? JSON.parse(v) as T : fb; } catch { return fb; }
+};
+const saveJson = <T,>(k: string, v: T) => {
+  try { localStorage.setItem(k, JSON.stringify(v)); } catch { /**/ }
+};
 
 // ─── WS URL ───────────────────────────────────────────────────────────────────
 const WS_URL = (() => {
@@ -86,11 +91,10 @@ const fmtNum  = (n: number) => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M' : n
 const fmtTime = (s: number) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 const engScore = (t: Track) => t.likes*3 + t.reposts*5 + t.comments.length*4 + t.plays*0.1;
 
-// Real time-ago using ISO timestamps
 const timeAgo = (ts: string): string => {
   if (!ts) return '';
   const date = new Date(ts);
-  if (isNaN(date.getTime())) return ts; // fallback for non-ISO strings
+  if (isNaN(date.getTime())) return ts;
   const diff = Date.now() - date.getTime();
   const s = Math.floor(diff / 1000);
   const m = Math.floor(s / 60);
@@ -103,10 +107,11 @@ const timeAgo = (ts: string): string => {
   if (d < 7)   return `${d} дн назад`;
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 };
-const genWave  = (seed: number): number[] =>
-  Array.from({length:60},(_,i) => Math.max(10, Math.min(90, Math.abs(Math.sin(i*0.4+seed)*0.5+Math.sin(i*0.8+seed*2)*0.3+Math.sin(i*0.2)*0.2)*100+20)));
 
-// Convert File to base64 string
+const genWave = (seed: number): number[] =>
+  Array.from({length:60},(_,i) => Math.max(10, Math.min(90,
+    Math.abs(Math.sin(i*0.4+seed)*0.5+Math.sin(i*0.8+seed*2)*0.3+Math.sin(i*0.2)*0.2)*100+20)));
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -119,7 +124,10 @@ function fileToBase64(file: File): Promise<string> {
 async function apiFetch(path: string, options?: RequestInit) {
   try {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
-    if (!r.ok) { const e = await r.json().catch(() => ({ error: r.statusText })); return { error: (e as {error?:string}).error || r.statusText }; }
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({ error: r.statusText }));
+      return { error: (e as {error?:string}).error || r.statusText };
+    }
     return await r.json();
   } catch (e) { return { error: (e as Error).message }; }
 }
@@ -128,7 +136,6 @@ async function apiFetch(path: string, options?: RequestInit) {
 const audioEl = new Audio();
 audioEl.volume = 0.75;
 audioEl.preload = 'auto';
-audioEl.crossOrigin = 'anonymous';
 
 // ─── PARTICLE CANVAS ──────────────────────────────────────────────────────────
 function ParticleCanvas() {
@@ -141,11 +148,11 @@ function ParticleCanvas() {
     let W = window.innerWidth, H = window.innerHeight;
     const resize = () => { W=window.innerWidth; H=window.innerHeight; canvas.width=W; canvas.height=H; };
     resize(); window.addEventListener('resize', resize);
-    const N = Math.min(100, Math.floor((W*H)/14000));
+    const N = Math.min(90, Math.floor((W*H)/16000));
     const particles = Array.from({length:N}, () => ({
       x:Math.random()*W, y:Math.random()*H,
       vx:(Math.random()-0.5)*0.35, vy:(Math.random()-0.5)*0.35,
-      r:Math.random()*1.8+0.3, alpha:Math.random()*0.35+0.06,
+      r:Math.random()*1.8+0.3, alpha:Math.random()*0.3+0.05,
       pulse:Math.random()*Math.PI*2,
       color:['139,92,246','59,130,246','255,255,255'][Math.floor(Math.random()*3)],
     }));
@@ -168,7 +175,7 @@ function ParticleCanvas() {
       for (let i=0;i<particles.length;i++) for (let j=i+1;j<particles.length;j++) {
         const a=particles[i],b=particles[j];
         const dx=a.x-b.x,dy=a.y-b.y,d=Math.sqrt(dx*dx+dy*dy);
-        if(d<85){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.strokeStyle=`rgba(139,92,246,${(1-d/85)*0.09})`;ctx.lineWidth=0.5;ctx.stroke();}
+        if(d<85){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.strokeStyle=`rgba(139,92,246,${(1-d/85)*0.08})`;ctx.lineWidth=0.5;ctx.stroke();}
       }
       animId=requestAnimationFrame(draw);
     };
@@ -207,8 +214,8 @@ function AnimatedWave() {
 function Toast({msg,onDone}:{msg:string;onDone:()=>void}) {
   useEffect(()=>{const t=setTimeout(onDone,3200);return()=>clearTimeout(t);},[onDone]);
   return (
-    <div style={{padding:'11px 16px',borderRadius:14,fontSize:'0.82rem',fontWeight:600,color:'#f1f5f9',display:'flex',alignItems:'center',gap:9,minWidth:'210px',maxWidth:'340px',animation:'fadeInUp 0.3s ease',pointerEvents:'all',background:'rgba(10,10,22,0.94)',backdropFilter:'blur(24px)',WebkitBackdropFilter:'blur(24px)',border:'1px solid rgba(139,92,246,0.28)',boxShadow:'0 8px 40px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
-      <div style={{width:7,height:7,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',flexShrink:0,boxShadow:'0 0 8px rgba(139,92,246,0.7)'}}/>
+    <div style={{padding:'11px 16px',borderRadius:14,fontSize:'0.82rem',fontWeight:600,color:'#f1f5f9',display:'flex',alignItems:'center',gap:9,minWidth:'210px',maxWidth:'min(340px, calc(100vw - 32px))',animation:'fadeInUp 0.3s ease',pointerEvents:'all',background:'rgba(10,10,22,0.94)',backdropFilter:'blur(24px)',WebkitBackdropFilter:'blur(24px)',border:'1px solid rgba(139,92,246,0.28)',boxShadow:'0 8px 40px rgba(0,0,0,0.5)'}}>
+      <div style={{width:7,height:7,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',flexShrink:0}}/>
       {msg}
     </div>
   );
@@ -217,7 +224,7 @@ function Toast({msg,onDone}:{msg:string;onDone:()=>void}) {
 // ─── COVER ART ────────────────────────────────────────────────────────────────
 function CoverArt({gradient,image,size=56}:{gradient:string;image?:string;size?:number}) {
   return (
-    <div style={{width:size,height:size,borderRadius:size<50?'8px':'12px',background:gradient,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 16px rgba(139,92,246,0.18)',overflow:'hidden'}}>
+    <div style={{width:size,height:size,borderRadius:size<50?'8px':'12px',background:gradient,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
       {image
         ? <img src={image} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
         : <svg width={size*0.38} height={size*0.38} viewBox="0 0 24 24" fill="rgba(255,255,255,0.3)"><path d="M9 18V5l12-2v13M9 18c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2zm12-2c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2z"/></svg>
@@ -247,31 +254,43 @@ function OnlineStatus({online}:{online:boolean}) {
 function NotificationBell({notifications,onClear,onMarkRead,onNotifClick}:{notifications:AppNotification[];onClear:()=>void;onMarkRead:()=>void;onNotifClick:(n:AppNotification)=>void}) {
   const [open,setOpen] = useState(false);
   const unread = notifications.filter(n=>!n.read).length;
-  const panelRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
   useEffect(()=>{
     if(!open) return;
-    const fn=(e:MouseEvent)=>{if(panelRef.current&&!panelRef.current.contains(e.target as Node)){setOpen(false);onMarkRead();}};
-    document.addEventListener('mousedown',fn);
-    return ()=>document.removeEventListener('mousedown',fn);
+    const fn=(e:MouseEvent)=>{
+      if(wrapRef.current&&!wrapRef.current.contains(e.target as Node)){
+        setOpen(false); onMarkRead();
+      }
+    };
+    // Use capture=true so this fires before other handlers
+    document.addEventListener('mousedown',fn,true);
+    return ()=>document.removeEventListener('mousedown',fn,true);
   },[open,onMarkRead]);
+
+  const toggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setOpen(p=>{if(p) onMarkRead(); return !p;});
+  };
+
   return (
-    <div style={{position:'relative'}} ref={panelRef}>
-      <button onClick={()=>{setOpen(p=>!p);if(open)onMarkRead();}}
+    <div ref={wrapRef} style={{position:'relative'}}>
+      <button onClick={toggle}
         style={{background:unread>0?'rgba(139,92,246,0.12)':'rgba(255,255,255,0.06)',border:unread>0?'1px solid rgba(139,92,246,0.3)':'1px solid rgba(255,255,255,0.08)',borderRadius:10,width:36,height:36,cursor:'pointer',color:unread>0?'#a78bfa':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',transition:'all 0.2s'}}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
         {unread>0&&<div style={{position:'absolute',top:-4,right:-4,width:17,height:17,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',fontSize:'0.58rem',fontWeight:800,color:'white',display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0a0a'}}>{unread>9?'9+':unread}</div>}
       </button>
       {open&&(
-        <div style={{position:'absolute',top:'110%',right:0,zIndex:300,width:300,maxHeight:420,borderRadius:16,border:'1px solid rgba(255,255,255,0.09)',display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 16px 60px rgba(0,0,0,0.55),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+        <div style={{position:'absolute',top:'110%',right:0,zIndex:500,width:300,maxHeight:420,borderRadius:16,border:'1px solid rgba(255,255,255,0.09)',display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 16px 60px rgba(0,0,0,0.6)'}}>
           <div style={{padding:'13px 15px 9px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.83rem'}}>Уведомления</span>
-            {notifications.length>0&&<button onClick={()=>{onClear();setOpen(false);}} style={{background:'none',border:'none',cursor:'pointer',color:'#475569',fontSize:'0.7rem',fontFamily:'Inter,sans-serif'}}>Очистить</button>}
+            {notifications.length>0&&<button onClick={(e)=>{e.stopPropagation();onClear();setOpen(false);}} style={{background:'none',border:'none',cursor:'pointer',color:'#475569',fontSize:'0.7rem',fontFamily:'Inter,sans-serif'}}>Очистить</button>}
           </div>
           <div style={{flex:1,overflowY:'auto'}}>
             {notifications.length===0
               ?<div style={{padding:'36px 20px',textAlign:'center',color:'#475569'}}><div style={{fontSize:'1.8rem',marginBottom:8}}>🔔</div><div style={{fontSize:'0.8rem'}}>Нет уведомлений</div></div>
               :notifications.slice().reverse().map(n=>(
-                <div key={n.id} onClick={()=>{onNotifClick(n);setOpen(false);onMarkRead();}}
+                <div key={n.id} onClick={(e)=>{e.stopPropagation();onNotifClick(n);setOpen(false);onMarkRead();}}
                   style={{padding:'10px 14px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:n.read?'transparent':'rgba(139,92,246,0.05)',display:'flex',gap:9,alignItems:'flex-start',cursor:'pointer',transition:'background 0.15s'}}
                   onMouseEnter={e=>(e.currentTarget.style.background='rgba(139,92,246,0.1)')}
                   onMouseLeave={e=>(e.currentTarget.style.background=n.read?'transparent':'rgba(139,92,246,0.05)')}>
@@ -323,7 +342,11 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
   const [loading,setLoading]   = useState(false);
   const [errors,setErrors]     = useState<Record<string,string>>({});
 
-  useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[onClose]);
+  useEffect(()=>{
+    const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose();};
+    window.addEventListener('keydown',fn);
+    return()=>window.removeEventListener('keydown',fn);
+  },[onClose]);
 
   const validate=()=>{
     const err:Record<string,string>={};
@@ -369,8 +392,11 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
       };
       if(onlineMode&&wsRef.current?.readyState===WebSocket.OPEN){
         const res=await wsAuth({type:'REGISTER',user:newUser},'REGISTER_OK','REGISTER_ERROR');
-        if(res.ok){const su=(res.data as {user:ServerUser}).user;setLoading(false);onSuccess({...newUser,id:su.id});onClose();onNotify('🎉 Добро пожаловать в ClaudMusic!');}
-        else{setLoading(false);setErrors({name:res.error||'Ошибка'});}
+        if(res.ok){
+          const su=(res.data as {user:ServerUser}).user;
+          setLoading(false);onSuccess({...newUser,id:su.id});onClose();
+          onNotify('🎉 Добро пожаловать в ClaudMusic!');
+        } else {setLoading(false);setErrors({name:res.error||'Ошибка'});}
       } else if(onlineMode){
         const res=await apiFetch('/api/register',{method:'POST',body:JSON.stringify({user:newUser})});
         setLoading(false);
@@ -398,15 +424,17 @@ function AuthModal({type:initType,onClose,onSuccess,onNotify,serverUsers,onlineM
       } else {
         const found=serverUsers.find(u=>u.email.toLowerCase()===emailLower);
         setLoading(false);
-        if(found){const u:User={id:found.id,name:found.name,email:found.email,avatar:GRADIENTS[0],role:found.role||'listener',followers:found.followers||0,following:0,tracksCount:found.tracksCount||0,verified:true,joinedAt:found.joinedAt};onSuccess(u);onClose();onNotify(`👋 С возвращением, ${found.name}!`);}
-        else setErrors({email:'Аккаунт не найден'});
+        if(found){
+          const u:User={id:found.id,name:found.name,email:found.email,avatar:GRADIENTS[0],role:found.role||'listener',followers:found.followers||0,following:0,tracksCount:found.tracksCount||0,verified:true,joinedAt:found.joinedAt};
+          onSuccess(u);onClose();onNotify(`👋 С возвращением, ${found.name}!`);
+        } else setErrors({email:'Аккаунт не найден'});
       }
     }
   };
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:20,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{width:'100%',maxWidth:400,borderRadius:24,padding:'32px 28px',position:'relative',background:'rgba(10,10,22,0.94)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+    <div style={{position:'fixed',inset:0,zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:20,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:400,borderRadius:24,padding:'32px 28px',position:'relative',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.6)'}}>
         <button onClick={onClose} style={{position:'absolute',top:14,right:14,background:'rgba(255,255,255,0.06)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
@@ -483,9 +511,13 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
   const [duration,setDuration]     = useState('');
   const fileRef  = useRef<HTMLInputElement>(null);
   const coverRef = useRef<HTMLInputElement>(null);
-  const submittedRef = useRef(false); // prevent double submission
+  const submittedRef = useRef(false);
 
-  useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!uploading)onClose();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[onClose,uploading]);
+  useEffect(()=>{
+    const fn=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!uploading)onClose();};
+    window.addEventListener('keydown',fn);
+    return()=>window.removeEventListener('keydown',fn);
+  },[onClose,uploading]);
 
   const handleFile=(f:File)=>{
     const isMp3=f.type==='audio/mpeg'||f.type==='audio/mp3'||f.name.toLowerCase().endsWith('.mp3');
@@ -539,7 +571,6 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
       isUserTrack:true,
     };
 
-    // Animate progress
     let p=0;
     const iv=setInterval(()=>{p+=Math.random()*8+4;if(p>=90){clearInterval(iv);}else setProgress(Math.min(p,90));},80);
 
@@ -561,8 +592,8 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
   const genreList=['Electronic','Hip-Hop','Rock','Lo-Fi','Jazz','Classical','Pop','Indie','Synthwave','R&B','Metal','Folk','Другое'];
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&!uploading&&onClose()}>
-      <div style={{width:'100%',maxWidth:500,borderRadius:24,padding:'28px 24px',position:'relative',margin:'auto',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.65),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+    <div style={{position:'fixed',inset:0,zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&!uploading&&onClose()}>
+      <div style={{width:'100%',maxWidth:500,borderRadius:24,padding:'28px 24px',position:'relative',margin:'auto',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 24px 80px rgba(0,0,0,0.65)'}}>
         {!uploading&&<button onClick={onClose} style={{position:'absolute',top:14,right:14,background:'rgba(255,255,255,0.06)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#64748b',display:'flex',alignItems:'center',justifyContent:'center'}}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>}
@@ -590,29 +621,34 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
               <div style={{height:'100%',width:`${progress}%`,background:'linear-gradient(90deg,#8B5CF6,#3B82F6)',borderRadius:3,transition:'width 0.3s ease'}}/>
             </div>
             <div style={{marginTop:8,fontSize:'0.76rem',color:'#a78bfa',fontWeight:700}}>{Math.round(progress)}%</div>
-            {progress<100&&<div style={{marginTop:12,fontSize:'0.72rem',color:'#475569'}}>Не закрывай страницу — это может занять до 30 сек</div>}
           </div>
         ):(
           <>
-            {/* Audio drop zone */}
             <div onDragOver={e=>{e.preventDefault();setIsDragOver(true);}} onDragLeave={()=>setIsDragOver(false)}
               onDrop={e=>{e.preventDefault();setIsDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);}}
               onClick={()=>fileRef.current?.click()}
               style={{borderRadius:14,padding:'22px 16px',textAlign:'center',cursor:'pointer',marginBottom:12,background:isDragOver?'rgba(139,92,246,0.1)':'rgba(255,255,255,0.02)',border:`2px dashed ${isDragOver?'rgba(139,92,246,0.6)':errors.file?'rgba(239,68,68,0.4)':'rgba(255,255,255,0.1)'}`,transition:'all 0.2s'}}>
               <input ref={fileRef} type="file" accept=".mp3,audio/mpeg" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f);e.target.value='';}}/>
-              <div style={{width:44,height:44,borderRadius:11,background:'rgba(139,92,246,0.1)',border:'1px solid rgba(139,92,246,0.25)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 10px'}}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              </div>
-              {file?(<div><div style={{fontSize:'0.87rem',fontWeight:700,color:'#a78bfa',marginBottom:3}}>✓ {file.name}</div>{duration&&<div style={{fontSize:'0.72rem',color:'#64748b'}}>Длительность: {duration}</div>}</div>):(<div><div style={{fontSize:'0.85rem',fontWeight:600,color:'#f8fafc',marginBottom:4}}>Перетащи или выбери MP3</div><div style={{fontSize:'0.72rem',color:'#475569'}}>Только формат MP3</div></div>)}
+              {file?(
+                <div>
+                  <div style={{fontSize:'0.87rem',fontWeight:700,color:'#a78bfa',marginBottom:3}}>✓ {file.name}</div>
+                  {duration&&<div style={{fontSize:'0.72rem',color:'#64748b'}}>Длительность: {duration}</div>}
+                </div>
+              ):(
+                <div>
+                  <div style={{fontSize:'1.5rem',marginBottom:8}}>🎵</div>
+                  <div style={{fontSize:'0.85rem',fontWeight:600,color:'#f8fafc',marginBottom:4}}>Перетащи или выбери MP3</div>
+                  <div style={{fontSize:'0.72rem',color:'#475569'}}>Только формат MP3</div>
+                </div>
+              )}
             </div>
             {errors.file&&<div style={{color:'#EF4444',fontSize:'0.76rem',marginBottom:9,marginTop:-6}}>{errors.file}</div>}
 
-            {/* Cover */}
             <div style={{marginBottom:14}}>
               <label style={{display:'block',fontSize:'0.7rem',fontWeight:700,color:'#94a3b8',marginBottom:7,textTransform:'uppercase',letterSpacing:'0.5px'}}>Обложка (необязательно)</label>
               <div style={{display:'flex',alignItems:'center',gap:12}}>
                 <div style={{width:64,height:64,borderRadius:10,background:coverPreview?'transparent':GRADIENTS[0],flexShrink:0,overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)'}}>
-                  {coverPreview?<img src={coverPreview} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center'}}><svg width="24" height="24" viewBox="0 0 24 24" fill="rgba(255,255,255,0.3)"><path d="M9 18V5l12-2v13M9 18c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2zm12-2c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2z"/></svg></div>}
+                  {coverPreview?<img src={coverPreview} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{fontSize:'1.5rem'}}>🎨</span></div>}
                 </div>
                 <div style={{flex:1}}>
                   <button onClick={()=>coverRef.current?.click()} style={{background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:9,padding:'8px 16px',cursor:'pointer',color:'#94a3b8',fontSize:'0.78rem',fontWeight:600,fontFamily:'Inter,sans-serif',width:'100%',textAlign:'left'}}>
@@ -665,7 +701,6 @@ function CommentsModal({track,user,onClose,onUpdateTrack,onRequestLogin,onlineMo
       isAuthor:user.id===track.artistId,
       replyTo:replyTo||undefined,
     };
-    // Send via WS or REST
     if(onlineMode&&wsRef.current?.readyState===WebSocket.OPEN){
       wsRef.current.send(JSON.stringify({type:'COMMENT',trackId:track.id,comment:c}));
     } else if(onlineMode){
@@ -689,8 +724,8 @@ function CommentsModal({track,user,onClose,onUpdateTrack,onRequestLogin,onlineMo
   const startReply=(c:Comment)=>{setReplyTo({id:c.id,userName:c.userName,text:c.text});setTimeout(()=>inputRef.current?.focus(),50);};
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(4,4,12,0.78)',backdropFilter:'blur(10px)',WebkitBackdropFilter:'blur(10px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{width:'100%',maxWidth:600,borderRadius:'22px 22px 0 0',maxHeight:'82vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 -8px 60px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+    <div style={{position:'fixed',inset:0,zIndex:400,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(4,4,12,0.78)',backdropFilter:'blur(10px)',WebkitBackdropFilter:'blur(10px)'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:600,borderRadius:'22px 22px 0 0',maxHeight:'82vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 -8px 60px rgba(0,0,0,0.5)'}}>
         <div style={{padding:'14px 20px 11px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
           <div style={{display:'flex',alignItems:'center',gap:9}}>
             <CoverArt gradient={track.coverGradient} image={track.coverImage} size={36}/>
@@ -793,8 +828,8 @@ function ProfileModal({artist,tracks,currentUser,onClose,onPlayTrack,onFollowTog
   const totalPlays=artistTracks.reduce((s,t)=>s+t.plays,0);
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[onClose]);
   return (
-    <div style={{position:'fixed',inset:0,zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{width:'100%',maxWidth:540,borderRadius:24,border:'1px solid rgba(255,255,255,0.09)',overflow:'hidden',margin:'auto',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 24px 80px rgba(0,0,0,0.65),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+    <div style={{position:'fixed',inset:0,zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'rgba(4,4,12,0.84)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)',overflowY:'auto'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{width:'100%',maxWidth:540,borderRadius:24,border:'1px solid rgba(255,255,255,0.09)',overflow:'hidden',margin:'auto',animation:'fadeInUp 0.3s ease',background:'rgba(10,10,22,0.96)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 24px 80px rgba(0,0,0,0.65)'}}>
         <div style={{height:90,background:'linear-gradient(135deg,rgba(139,92,246,0.3),rgba(59,130,246,0.2))',position:'relative'}}>
           <button onClick={onClose} style={{position:'absolute',top:12,right:12,background:'rgba(0,0,0,0.5)',border:'none',width:30,height:30,borderRadius:8,cursor:'pointer',color:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -866,29 +901,30 @@ function ProfileModal({artist,tracks,currentUser,onClose,onPlayTrack,onFollowTog
 // ─── PLAYER BAR ───────────────────────────────────────────────────────────────
 interface PlayerBarProps {track:Track;isPlaying:boolean;onPlayPause:()=>void;onNext:()=>void;onPrev:()=>void;onOpenComments:(t:Track)=>void;onDownload:(t:Track)=>void;}
 function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onDownload}:PlayerBarProps) {
-  const [progress,setProgress]   = useState(0);
+  const [progress,setProgress]       = useState(0);
   const [currentTime,setCurrentTime] = useState(0);
-  const [totalTime,setTotalTime] = useState(0);
-  const [volume,setVolume]       = useState(75);
-  const [isRepeat,setIsRepeat]   = useState(false);
-  const [noAudio,setNoAudio]     = useState(false);
+  const [totalTime,setTotalTime]     = useState(0);
+  const [volume,setVolume]           = useState(75);
+  const [isRepeat,setIsRepeat]       = useState(false);
+  const [noAudio,setNoAudio]         = useState(false);
   const wantPlayRef    = useRef(false);
   const canPlayRef     = useRef(false);
   const playCountedRef = useRef('');
 
-  // Returns the best audio URL for this track
-  const getAudioUrl = (t: Track) => t.audioUrl || (t.serverAudio ? t.serverAudio : null);
+  const getAudioUrl = (t: Track): string | null => {
+    if (t.audioUrl) return t.audioUrl;
+    if (t.serverAudio) return `${window.location.origin}${t.serverAudio}`;
+    return null;
+  };
 
   useEffect(()=>{
     setProgress(0); setCurrentTime(0); setTotalTime(0); canPlayRef.current=false;
     const url = getAudioUrl(track);
     if(!url){ audioEl.pause(); audioEl.src=''; setNoAudio(true); return; }
     setNoAudio(false);
-    wantPlayRef.current=isPlaying;
+    wantPlayRef.current = isPlaying;
 
-    // Build full URL for server audio
-    const fullUrl = url.startsWith('/api/') ? `${window.location.origin}${url}` : url;
-    audioEl.src=fullUrl;
+    audioEl.src = url;
     audioEl.load();
 
     const onCanPlay=()=>{
@@ -898,17 +934,19 @@ function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onD
         if(p) p.catch(err=>console.warn('[Audio]',err.message));
       }
     };
-    const onError=(e: Event)=>{ console.warn('[Audio] Error loading track', e); setNoAudio(true); };
+    const onError=()=>{ setNoAudio(true); };
     audioEl.addEventListener('canplay',onCanPlay,{once:true});
     audioEl.addEventListener('error',onError,{once:true});
-    return ()=>{ audioEl.removeEventListener('canplay',onCanPlay); audioEl.removeEventListener('error',onError); };
+    return ()=>{
+      audioEl.removeEventListener('canplay',onCanPlay);
+      audioEl.removeEventListener('error',onError);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[track.id, track.audioUrl, track.serverAudio]);
 
   useEffect(()=>{
     wantPlayRef.current=isPlaying;
-    const url=getAudioUrl(track);
-    if(!url||!canPlayRef.current) return;
+    if(!canPlayRef.current) return;
     if(isPlaying){
       const p=audioEl.play(); if(p) p.catch(e=>console.warn('[Audio]',e.message));
       if(playCountedRef.current!==track.id){
@@ -920,13 +958,23 @@ function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onD
   },[isPlaying, track.id]);
 
   useEffect(()=>{
-    const onTime=()=>{setCurrentTime(audioEl.currentTime);if(audioEl.duration&&isFinite(audioEl.duration)){setTotalTime(audioEl.duration);setProgress(audioEl.currentTime/audioEl.duration*100);}};
+    const onTime=()=>{
+      setCurrentTime(audioEl.currentTime);
+      if(audioEl.duration&&isFinite(audioEl.duration)){
+        setTotalTime(audioEl.duration);
+        setProgress(audioEl.currentTime/audioEl.duration*100);
+      }
+    };
     const onEnded=()=>{if(isRepeat){audioEl.currentTime=0;audioEl.play().catch(()=>{});}else onNext();};
     const onMeta=()=>{if(audioEl.duration&&isFinite(audioEl.duration))setTotalTime(audioEl.duration);};
     audioEl.addEventListener('timeupdate',onTime);
     audioEl.addEventListener('ended',onEnded);
     audioEl.addEventListener('loadedmetadata',onMeta);
-    return ()=>{audioEl.removeEventListener('timeupdate',onTime);audioEl.removeEventListener('ended',onEnded);audioEl.removeEventListener('loadedmetadata',onMeta);};
+    return ()=>{
+      audioEl.removeEventListener('timeupdate',onTime);
+      audioEl.removeEventListener('ended',onEnded);
+      audioEl.removeEventListener('loadedmetadata',onMeta);
+    };
   },[isRepeat,onNext]);
 
   useEffect(()=>{audioEl.volume=volume/100;},[volume]);
@@ -941,31 +989,33 @@ function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onD
 
   const PrevBtn=()=>(<button onClick={onPrev} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:4,display:'flex',transition:'color 0.2s'}} onMouseEnter={e=>(e.currentTarget.style.color='#f8fafc')} onMouseLeave={e=>(e.currentTarget.style.color='#94a3b8')}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="19,20 9,12 19,4"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg></button>);
   const NextBtn=()=>(<button onClick={onNext} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:4,display:'flex',transition:'color 0.2s'}} onMouseEnter={e=>(e.currentTarget.style.color='#f8fafc')} onMouseLeave={e=>(e.currentTarget.style.color='#94a3b8')}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg></button>);
-  const PlayBtn=({size=40}:{size?:number})=>(<button onClick={onPlayPause} className={isPlaying?'pulse-play':''} style={{width:size,height:size,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 16px rgba(139,92,246,0.5)',transition:'transform 0.15s'}} onMouseEnter={e=>(e.currentTarget.style.transform='scale(1.08)')} onMouseLeave={e=>(e.currentTarget.style.transform='scale(1)')}>
+  const PlayBtn=({size=40}:{size?:number})=>(<button onClick={onPlayPause} className={isPlaying?'pulse-play':''} style={{width:size,height:size,borderRadius:'50%',background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 16px rgba(139,92,246,0.5)',transition:'transform 0.15s',flexShrink:0}} onMouseEnter={e=>(e.currentTarget.style.transform='scale(1.08)')} onMouseLeave={e=>(e.currentTarget.style.transform='scale(1)')}>
     {isPlaying?<svg width={size*0.38} height={size*0.38} viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>:<svg width={size*0.38} height={size*0.38} viewBox="0 0 24 24" fill="white" style={{marginLeft:2}}><polygon points="5,3 19,12 5,21"/></svg>}
   </button>);
+
+  if (track.id === '__dummy__') return null;
 
   return (
     <div className="player-bar" style={{position:'fixed',bottom:0,left:0,right:0,zIndex:200}}>
       {/* Mobile */}
-      <div className="show-mobile" style={{padding:'10px 14px 14px',display:'none',flexDirection:'column',gap:8}}>
+      <div className="show-mobile" style={{padding:'10px 14px 16px',display:'none',flexDirection:'column',gap:8}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <CoverArt gradient={track.coverGradient} image={track.coverImage} size={40}/>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontWeight:700,color:'#f8fafc',fontSize:'0.78rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{track.title}</div>
-            <div style={{color:'#64748b',fontSize:'0.65rem'}}>{track.artist}</div>
+            <div style={{color:'#64748b',fontSize:'0.65rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{track.artist}</div>
             {noAudio&&<div style={{fontSize:'0.55rem',color:'#F59E0B'}}>Файл недоступен</div>}
           </div>
-          <div style={{display:'flex',alignItems:'center',gap:5}}><PrevBtn/><PlayBtn size={36}/><NextBtn/></div>
+          <div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}><PrevBtn/><PlayBtn size={36}/><NextBtn/></div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:7}}>
-          <span style={{fontSize:'0.58rem',color:'#475569',width:26,textAlign:'right'}}>{fmtTime(currentTime)}</span>
+          <span style={{fontSize:'0.58rem',color:'#475569',width:26,textAlign:'right',flexShrink:0}}>{fmtTime(currentTime)}</span>
           <div onClick={clickProgress} style={{flex:1,height:24,display:'flex',alignItems:'center',cursor:'pointer'}}>
             <div style={{width:'100%',height:3,background:'rgba(255,255,255,0.1)',borderRadius:2,overflow:'hidden'}}>
               <div style={{height:'100%',width:`${progress}%`,background:'linear-gradient(90deg,#8B5CF6,#3B82F6)',borderRadius:2}}/>
             </div>
           </div>
-          <span style={{fontSize:'0.58rem',color:'#475569',width:26}}>{totalTime>0?fmtTime(totalTime):track.duration}</span>
+          <span style={{fontSize:'0.58rem',color:'#475569',width:26,flexShrink:0}}>{totalTime>0?fmtTime(totalTime):track.duration}</span>
         </div>
       </div>
       {/* Desktop */}
@@ -1014,28 +1064,45 @@ function PlayerBar({track,isPlaying,onPlayPause,onNext,onPrev,onOpenComments,onD
 
 // ─── HEADER ───────────────────────────────────────────────────────────────────
 interface HeaderProps {
-  user:User|null;onOpenModal:(t:ModalType)=>void;onLogout:()=>void;
-  activeSection:string;onNavClick:(s:string)=>void;online:boolean;
-  notifications:AppNotification[];onClearNotifs:()=>void;onMarkNotifsRead:()=>void;onNotifClick:(n:AppNotification)=>void;
-  onSearchSubmit:(q:string)=>void;onOpenProfile:()=>void;
+  user:User|null; onOpenModal:(t:ModalType)=>void; onLogout:()=>void;
+  activeSection:string; onNavClick:(s:string)=>void; online:boolean;
+  notifications:AppNotification[]; onClearNotifs:()=>void; onMarkNotifsRead:()=>void; onNotifClick:(n:AppNotification)=>void;
+  onSearchSubmit:(q:string)=>void; onOpenProfile:()=>void; onOpenUpload:()=>void;
 }
-function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notifications,onClearNotifs,onMarkNotifsRead,onNotifClick,onSearchSubmit,onOpenProfile}:HeaderProps) {
+function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notifications,onClearNotifs,onMarkNotifsRead,onNotifClick,onSearchSubmit,onOpenProfile,onOpenUpload}:HeaderProps) {
   const [menuOpen,setMenuOpen] = useState(false);
   const [showUser,setShowUser] = useState(false);
   const [inputVal,setInputVal] = useState('');
-  const userRef = useRef<HTMLDivElement>(null);
-  useEffect(()=>{const fn=(e:MouseEvent)=>{if(userRef.current&&!userRef.current.contains(e.target as Node))setShowUser(false);};document.addEventListener('mousedown',fn);return()=>document.removeEventListener('mousedown',fn);},[]);
+  // Single ref wrapping the entire right-side user menu area
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(()=>{
+    const fn=(e:MouseEvent)=>{
+      if(userMenuRef.current&&!userMenuRef.current.contains(e.target as Node)){
+        setShowUser(false);
+      }
+    };
+    document.addEventListener('mousedown',fn);
+    return()=>document.removeEventListener('mousedown',fn);
+  },[]);
+
   const handleNavClick=(id:string)=>{onNavClick(id);setMenuOpen(false);};
-  const handleSearchKey=(e:React.KeyboardEvent<HTMLInputElement>)=>{if(e.key==='Enter'){onSearchSubmit(inputVal.trim());}if(e.key==='Escape'){setInputVal('');onSearchSubmit('');}};
+  const handleSearchKey=(e:React.KeyboardEvent<HTMLInputElement>)=>{
+    if(e.key==='Enter'){onSearchSubmit(inputVal.trim());}
+    if(e.key==='Escape'){setInputVal('');onSearchSubmit('');}
+  };
+
   return (
     <header style={{position:'fixed',top:0,left:0,right:0,zIndex:100,borderBottom:'1px solid rgba(255,255,255,0.07)',background:'rgba(8,8,18,0.88)',backdropFilter:'blur(40px) saturate(180%)',WebkitBackdropFilter:'blur(40px) saturate(180%)',boxShadow:'0 1px 0 rgba(255,255,255,0.04),0 4px 24px rgba(0,0,0,0.3)'}}>
       <div style={{maxWidth:1280,margin:'0 auto',padding:'0 20px',height:62,display:'flex',alignItems:'center',gap:14}}>
+        {/* Logo */}
         <div onClick={()=>handleNavClick('hero')} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',flexShrink:0}}>
           <div style={{width:34,height:34,background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 0 14px rgba(139,92,246,0.35)'}}>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M2 12C2 12 4 4 6 4C8 4 8 20 10 20C12 20 12 8 14 8C16 8 16 16 18 16C20 16 22 12 22 12" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </div>
           <span style={{fontWeight:800,fontSize:'1.05rem',color:'#f8fafc',letterSpacing:'-0.5px'}}>ClaudMusic</span>
         </div>
+        {/* Nav */}
         <nav style={{display:'flex',gap:1,flex:1}} className="hide-mobile">
           {SECTIONS.map(n=>(
             <button key={n.id} onClick={()=>handleNavClick(n.id)}
@@ -1046,29 +1113,33 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
             </button>
           ))}
         </nav>
+        {/* Search */}
         <div style={{position:'relative',flex:'0 0 195px'}} className="hide-mobile">
           <svg style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input className="input-dark" style={{paddingLeft:30,borderRadius:100,fontSize:'0.82rem'}} placeholder="Поиск... (Enter)" value={inputVal} onChange={e=>setInputVal(e.target.value)} onKeyDown={handleSearchKey}/>
           {inputVal&&<button onClick={()=>{setInputVal('');onSearchSubmit('');}} style={{position:'absolute',right:9,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',cursor:'pointer',color:'#475569',display:'flex',padding:0}}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg></button>}
         </div>
-        <div style={{display:'flex',gap:7,flexShrink:0,alignItems:'center'}}>
+        {/* Right side — everything wrapped in one div */}
+        <div style={{display:'flex',gap:7,flexShrink:0,alignItems:'center'}} ref={userMenuRef}>
           <div className="hide-mobile"><OnlineStatus online={online}/></div>
           {user?(
             <>
+              {/* NotificationBell inside userMenuRef so clicks don't close dropdown */}
               <NotificationBell notifications={notifications} onClear={onClearNotifs} onMarkRead={onMarkNotifsRead} onNotifClick={onNotifClick}/>
               {user.role==='artist'&&(
-                <button onClick={()=>onOpenModal('upload')} style={{background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',border:'none',borderRadius:100,padding:'6px 13px',cursor:'pointer',color:'white',fontWeight:700,fontSize:'0.78rem',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:4,boxShadow:'0 0 12px rgba(139,92,246,0.3)'}}>
+                <button onClick={onOpenUpload} style={{background:'linear-gradient(135deg,#8B5CF6,#3B82F6)',border:'none',borderRadius:100,padding:'6px 13px',cursor:'pointer',color:'white',fontWeight:700,fontSize:'0.78rem',fontFamily:'Inter,sans-serif',display:'flex',alignItems:'center',gap:4,boxShadow:'0 0 12px rgba(139,92,246,0.3)'}}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                   <span className="hide-mobile">Загрузить</span>
                 </button>
               )}
-              <div style={{position:'relative'}} ref={userRef}>
+              {/* User avatar — toggles dropdown */}
+              <div style={{position:'relative'}}>
                 <div onClick={()=>setShowUser(p=>!p)} style={{width:34,height:34,borderRadius:'50%',background:user.avatar,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'white',fontSize:'0.82rem',border:'2px solid rgba(139,92,246,0.5)',transition:'border-color 0.2s'}}
                   onMouseEnter={e=>(e.currentTarget.style.borderColor='rgba(139,92,246,0.8)')} onMouseLeave={e=>(e.currentTarget.style.borderColor='rgba(139,92,246,0.5)')}>
                   {user.name[0].toUpperCase()}
                 </div>
                 {showUser&&(
-                  <div style={{position:'absolute',top:'115%',right:0,borderRadius:16,padding:8,minWidth:210,zIndex:201,animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 16px 60px rgba(0,0,0,0.55),0 0 0 1px rgba(255,255,255,0.04) inset'}}>
+                  <div style={{position:'absolute',top:'115%',right:0,borderRadius:16,padding:8,minWidth:210,zIndex:300,animation:'fadeInUp 0.2s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',border:'1px solid rgba(255,255,255,0.09)',boxShadow:'0 16px 60px rgba(0,0,0,0.55)'}}>
                     <div style={{padding:'11px 13px',borderBottom:'1px solid rgba(255,255,255,0.06)',marginBottom:5}}>
                       <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2}}>
                         <span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.85rem'}}>{user.name}</span>
@@ -1083,8 +1154,12 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
                       {user.role==='artist'&&<div style={{textAlign:'center'}}><div style={{fontWeight:700,color:'#f8fafc',fontSize:'0.85rem'}}>{user.tracksCount}</div><div style={{fontSize:'0.65rem',color:'#64748b'}}>Треков</div></div>}
                       <div style={{textAlign:'center'}}><div style={{fontWeight:700,color:'#f8fafc',fontSize:'0.85rem'}}>{user.followers}</div><div style={{fontSize:'0.65rem',color:'#64748b'}}>Подписчиков</div></div>
                     </div>
-                    <button onClick={()=>{setShowUser(false);onOpenProfile();}} style={{width:'100%',background:'rgba(139,92,246,0.08)',border:'1px solid rgba(139,92,246,0.2)',borderRadius:9,padding:8,cursor:'pointer',color:'#a78bfa',fontWeight:600,fontSize:'0.8rem',fontFamily:'Inter,sans-serif',marginBottom:5}}>Мой профиль</button>
-                    <button onClick={()=>{setShowUser(false);onLogout();}} style={{width:'100%',background:'rgba(239,68,68,0.08)',border:'1px solid rgba(239,68,68,0.2)',borderRadius:9,padding:8,cursor:'pointer',color:'#f87171',fontWeight:600,fontSize:'0.8rem',fontFamily:'Inter,sans-serif'}}>Выйти</button>
+                    <button onClick={()=>{setShowUser(false);onOpenProfile();}} style={{width:'100%',background:'rgba(139,92,246,0.08)',border:'1px solid rgba(139,92,246,0.2)',borderRadius:9,padding:8,cursor:'pointer',color:'#a78bfa',fontWeight:600,fontSize:'0.8rem',fontFamily:'Inter,sans-serif',marginBottom:5}}>
+                      👤 Мой профиль
+                    </button>
+                    <button onClick={()=>{setShowUser(false);onLogout();}} style={{width:'100%',background:'rgba(239,68,68,0.08)',border:'1px solid rgba(239,68,68,0.2)',borderRadius:9,padding:8,cursor:'pointer',color:'#f87171',fontWeight:600,fontSize:'0.8rem',fontFamily:'Inter,sans-serif'}}>
+                      Выйти
+                    </button>
                   </div>
                 )}
               </div>
@@ -1095,11 +1170,13 @@ function Header({user,onOpenModal,onLogout,activeSection,onNavClick,online,notif
               <button onClick={()=>onOpenModal('register')} className="btn-glow" style={{border:'none',borderRadius:100,padding:'6px 16px',cursor:'pointer',color:'white',fontWeight:700,fontSize:'0.85rem',fontFamily:'Inter,sans-serif'}}><span>Регистрация</span></button>
             </>
           )}
+          {/* Burger */}
           <button className="show-mobile" onClick={()=>setMenuOpen(p=>!p)} style={{background:'rgba(255,255,255,0.06)',border:'none',borderRadius:8,width:34,height:34,cursor:'pointer',color:'#f8fafc',display:'none',alignItems:'center',justifyContent:'center'}}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
         </div>
       </div>
+      {/* Mobile menu */}
       {menuOpen&&(
         <div style={{padding:'8px 20px 16px',borderTop:'1px solid rgba(255,255,255,0.07)',display:'flex',flexDirection:'column',gap:2,background:'rgba(8,8,18,0.97)',backdropFilter:'blur(40px)',WebkitBackdropFilter:'blur(40px)'}}>
           {SECTIONS.map(n=>(
@@ -1126,7 +1203,7 @@ function TrackCard({track,isCurrentPlaying,onPlay,onLike,onRepost,onComment,onDo
   return (
     <div className="track-card" style={{borderRadius:18,padding:16,border:`1px solid ${isCurrentPlaying?'rgba(139,92,246,0.45)':'rgba(255,255,255,0.07)'}`,minWidth:190,maxWidth:210,flexShrink:0,background:isCurrentPlaying?'rgba(18,18,38,0.9)':'rgba(14,14,28,0.82)',backdropFilter:'blur(20px) saturate(160%)',WebkitBackdropFilter:'blur(20px) saturate(160%)',boxShadow:isCurrentPlaying?'0 0 36px rgba(139,92,246,0.18),0 4px 20px rgba(0,0,0,0.4)':'0 4px 20px rgba(0,0,0,0.3)',transition:'all 0.3s'}}>
       <div style={{position:'relative',marginBottom:11}} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}>
-        <div style={{width:'100%',aspectRatio:'1',borderRadius:12,background:track.coverGradient,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 6px 20px rgba(0,0,0,0.3)',overflow:'hidden'}}>
+        <div style={{width:'100%',aspectRatio:'1',borderRadius:12,background:track.coverGradient,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
           {track.coverImage?<img src={track.coverImage} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<svg width="30" height="30" viewBox="0 0 24 24" fill="rgba(255,255,255,0.3)"><path d="M9 18V5l12-2v13M9 18c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2zm12-2c0 1.1-1.34 2-3 2s-3-.9-3-2 1.34-2 3-2 3 .9 3 2z"/></svg>}
         </div>
         <button onClick={onPlay} style={{position:'absolute',inset:0,background:hov||isCurrentPlaying?'rgba(0,0,0,0.45)':'transparent',border:'none',cursor:'pointer',borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.2s'}}>
@@ -1161,7 +1238,7 @@ function TrackCard({track,isCurrentPlaying,onPlay,onLike,onRepost,onComment,onDo
         {(track.audioUrl||track.serverAudio)&&<button onClick={onDownload} title="Скачать" style={{background:'none',border:'none',cursor:'pointer',color:'#475569',padding:0,display:'flex',marginLeft:'auto'}} onMouseEnter={e=>(e.currentTarget.style.color='#34d399')} onMouseLeave={e=>(e.currentTarget.style.color='#475569')}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </button>}
-        {onDelete&&<button onClick={onDelete} title="Удалить трек" style={{background:'none',border:'none',cursor:'pointer',color:'#475569',padding:0,display:'flex',marginLeft:!track.audioUrl&&!track.serverAudio?'auto':0}} onMouseEnter={e=>(e.currentTarget.style.color='#ef4444')} onMouseLeave={e=>(e.currentTarget.style.color='#475569')}>
+        {onDelete&&<button onClick={onDelete} title="Удалить трек" style={{background:'none',border:'none',cursor:'pointer',color:'#475569',padding:0,display:'flex',marginLeft:!(track.audioUrl||track.serverAudio)?'auto':0}} onMouseEnter={e=>(e.currentTarget.style.color='#ef4444')} onMouseLeave={e=>(e.currentTarget.style.color='#475569')}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
         </button>}
       </div>
@@ -1236,7 +1313,7 @@ function EmptyState({onUpload,onLogin,user}:{onUpload:()=>void;onLogin:()=>void;
       <p style={{color:'#64748b',marginBottom:26,maxWidth:360,margin:'0 auto 26px',lineHeight:1.7,fontSize:'0.88rem'}}>ClaudMusic — платформа для настоящих артистов.<br/>Загрузи первый трек и стань частью сообщества.</p>
       <div style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap'}}>
         {user?.role==='artist'
-          ?<button onClick={onUpload} className="btn-glow" style={{border:'none',cursor:'pointer',padding:'11px 26px',borderRadius:100,fontSize:'0.88rem',fontWeight:700,color:'white',fontFamily:'Inter,sans-serif'}}><span style={{display:'flex',alignItems:'center',gap:7}}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Загрузить трек</span></button>
+          ?<button onClick={onUpload} className="btn-glow" style={{border:'none',cursor:'pointer',padding:'11px 26px',borderRadius:100,fontSize:'0.88rem',fontWeight:700,color:'white',fontFamily:'Inter,sans-serif'}}><span>⬆ Загрузить трек</span></button>
           :!user
             ?<button onClick={onLogin} className="btn-glow" style={{border:'none',cursor:'pointer',padding:'11px 26px',borderRadius:100,fontSize:'0.88rem',fontWeight:700,color:'white',fontFamily:'Inter,sans-serif'}}>Войти / Регистрация</button>
             :<div style={{color:'#64748b',fontSize:'0.83rem'}}>Артисты ещё не загрузили треки 🎵</div>
@@ -1251,7 +1328,7 @@ function SearchResults({query,tracks,currentTrackId,isPlaying,onPlay,onLike,onRe
   const q=query.toLowerCase().trim();
   const results=tracks.filter(t=>t.title.toLowerCase().includes(q)||t.artist.toLowerCase().includes(q)||t.genre.toLowerCase().includes(q));
   return (
-    <div style={{position:'fixed',inset:0,zIndex:250,background:'rgba(0,0,0,0.72)',backdropFilter:'blur(10px)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'72px 20px 20px'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{position:'fixed',inset:0,zIndex:350,background:'rgba(0,0,0,0.72)',backdropFilter:'blur(10px)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'72px 20px 20px'}} onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{width:'100%',maxWidth:620,borderRadius:18,border:'1px solid rgba(255,255,255,0.09)',overflow:'hidden',maxHeight:'72vh',display:'flex',flexDirection:'column',animation:'fadeInUp 0.25s ease',background:'rgba(10,10,22,0.97)',backdropFilter:'blur(40px) saturate(200%)',WebkitBackdropFilter:'blur(40px) saturate(200%)',boxShadow:'0 24px 80px rgba(0,0,0,0.6)'}}>
         <div style={{padding:'14px 18px',borderBottom:'1px solid rgba(255,255,255,0.06)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div><span style={{fontWeight:700,color:'#f8fafc',fontSize:'0.88rem'}}>«{query}»</span><span style={{fontSize:'0.72rem',color:'#64748b',marginLeft:9}}>{results.length} результатов</span></div>
@@ -1259,7 +1336,7 @@ function SearchResults({query,tracks,currentTrackId,isPlaying,onPlay,onLike,onRe
         </div>
         <div style={{flex:1,overflowY:'auto',padding:'9px 14px',display:'flex',flexDirection:'column',gap:5}}>
           {results.length===0
-            ?<div style={{textAlign:'center',padding:'36px 0',color:'#475569'}}><div style={{fontSize:'1.8rem',marginBottom:9}}>🔍</div><div style={{fontWeight:600,color:'#64748b'}}>Ничего не найдено</div><div style={{fontSize:'0.8rem',marginTop:5}}>Попробуй другой запрос</div></div>
+            ?<div style={{textAlign:'center',padding:'36px 0',color:'#475569'}}><div style={{fontSize:'1.8rem',marginBottom:9}}>🔍</div><div style={{fontWeight:600,color:'#64748b'}}>Ничего не найдено</div></div>
             :results.map(t=><ReleaseRow key={t.id} track={t} isCurrentPlaying={currentTrackId===t.id&&isPlaying}
                 onPlay={()=>{onPlay(t);onClose();}} onLike={()=>onLike(t.id)} onRepost={()=>onRepost(t.id)}
                 onComment={()=>{onComment(t);onClose();}} onDownload={()=>onDownload(t)}
@@ -1272,138 +1349,144 @@ function SearchResults({query,tracks,currentTrackId,isPlaying,onPlay,onLike,onRe
 }
 
 // ─── DUMMY TRACK ──────────────────────────────────────────────────────────────
-const DUMMY_TRACK:Track={id:'__dummy__',title:'— Нет трека —',artist:'ClaudMusic',artistId:'',genre:'',plays:0,likes:0,reposts:0,duration:'0:00',uploadDate:'',coverGradient:GRADIENTS[0],verified:false,description:'',liked:false,reposted:false,comments:[],waveform:genWave(42),isUserTrack:false};
+const DUMMY_TRACK: Track = {id:'__dummy__',title:'',artist:'',artistId:'',genre:'',plays:0,likes:0,reposts:0,duration:'0:00',uploadDate:'',coverGradient:GRADIENTS[0],verified:false,description:'',liked:false,reposted:false,comments:[],waveform:genWave(42),isUserTrack:false};
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export function App() {
-  const [user,setUser]                 = useState<User|null>(()=>loadJson<User|null>(LS_USER,null));
-  const [tracks,setTracks]             = useState<Track[]>([]);
-  const [serverUsers,setServerUsers]   = useState<ServerUser[]>([]);
-  const [currentTrack,setCurrentTrack] = useState<Track>(DUMMY_TRACK);
-  const [isPlaying,setIsPlaying]       = useState(false);
-  const [online,setOnline]             = useState(false);
-  const [modal,setModal]               = useState<ModalType>(null);
-  const [commentTrack,setCommentTrack] = useState<Track|null>(null);
+  const [user,setUser]                   = useState<User|null>(()=>loadJson<User|null>(LS_USER,null));
+  const [tracks,setTracks]               = useState<Track[]>(()=>{
+    // Load from localStorage backup first (will be replaced by server data)
+    const saved = loadJson<Track[]>(LS_TRACKS, []);
+    return saved.map(t=>({...t, audioUrl:undefined, liked:false, reposted:false}));
+  });
+  const [serverUsers,setServerUsers]     = useState<ServerUser[]>([]);
+  const [currentTrack,setCurrentTrack]   = useState<Track>(DUMMY_TRACK);
+  const [isPlaying,setIsPlaying]         = useState(false);
+  const [online,setOnline]               = useState(false);
+  const [modal,setModal]                 = useState<ModalType>(null);
+  const [commentTrack,setCommentTrack]   = useState<Track|null>(null);
   const [profileArtistId,setProfileArtistId] = useState<string|null>(null);
   const [activeSection,setActiveSection] = useState('hero');
-  const [toasts,setToasts]             = useState<{id:number;msg:string}[]>([]);
+  const [toasts,setToasts]               = useState<{id:number;msg:string}[]>([]);
   const [selectedGenre,setSelectedGenre] = useState<string|null>(null);
   const [notifications,setNotifications] = useState<AppNotification[]>(()=>loadJson(LS_NOTIFS,[]));
-  const [searchQuery,setSearchQuery]   = useState('');
-  const [showSearch,setShowSearch]     = useState(false);
-  const [followingIds,setFollowingIds] = useState<string[]>(()=>loadJson(LS_FOLLOW,[]));
-  const [likedIds,setLikedIds]         = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_LIKED,[])));
-  const [repostedIds,setRepostedIds]   = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_REPOST,[])));
+  const [searchQuery,setSearchQuery]     = useState('');
+  const [showSearch,setShowSearch]       = useState(false);
+  const [followingIds,setFollowingIds]   = useState<string[]>(()=>loadJson(LS_FOLLOW,[]));
+  const [likedIds,setLikedIds]           = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_LIKED,[])));
+  const [repostedIds,setRepostedIds]     = useState<Set<string>>(()=>new Set(loadJson<string[]>(LS_REPOST,[])));
 
   const wsRef     = useRef<WebSocket|null>(null);
   const reconnRef = useRef<ReturnType<typeof setTimeout>|null>(null);
   const pollRef   = useRef<ReturnType<typeof setInterval>|null>(null);
 
-  // Persist user & notifications & likes/reposts
-  useEffect(()=>{ saveJson(LS_USER,user); },[user]);
-  useEffect(()=>{ saveJson(LS_NOTIFS,notifications); },[notifications]);
-  useEffect(()=>{ saveJson(LS_FOLLOW,followingIds); },[followingIds]);
-  useEffect(()=>{ saveJson(LS_LIKED,[...likedIds]); },[likedIds]);
-  useEffect(()=>{ saveJson(LS_REPOST,[...repostedIds]); },[repostedIds]);
+  // Persist all state
+  useEffect(()=>{ saveJson(LS_USER, user); },[user]);
+  useEffect(()=>{ saveJson(LS_NOTIFS, notifications); },[notifications]);
+  useEffect(()=>{ saveJson(LS_FOLLOW, followingIds); },[followingIds]);
+  useEffect(()=>{ saveJson(LS_LIKED, [...likedIds]); },[likedIds]);
+  useEffect(()=>{ saveJson(LS_REPOST, [...repostedIds]); },[repostedIds]);
+
+  // Save track metadata to localStorage (without audioUrl / coverImage to save space)
+  useEffect(()=>{
+    const toSave = tracks.map(t=>({
+      ...t,
+      audioUrl: undefined,
+      coverImage: t.coverImage && t.coverImage.length < 50000 ? t.coverImage : undefined, // only small covers
+      liked: false,
+      reposted: false,
+    }));
+    saveJson(LS_TRACKS, toSave);
+  },[tracks]);
 
   const notify=useCallback((msg:string)=>{const id=Date.now();setToasts(p=>[...p,{id,msg}]);},[]);
   const removeToast=useCallback((id:number)=>setToasts(p=>p.filter(t=>t.id!==id)),[]);
 
-  // Apply server track update while preserving local audio/cover
-  const applyServerTrack = useCallback((st: Track): Track => {
+  // Merge server tracks with local state (preserving audioUrl, liked, reposted)
+  const mergeServerTracks = useCallback((serverTracks: Track[]) => {
+    const lk = new Set(loadJson<string[]>(LS_LIKED, []));
+    const rp = new Set(loadJson<string[]>(LS_REPOST, []));
     setTracks(prev => {
-      const local = prev.find(t => t.id === st.id);
-      return prev.map(t => t.id !== st.id ? t : {
-        ...st,
-        audioUrl:    local?.audioUrl,
-        serverAudio: st.serverAudio || local?.serverAudio,
-        liked:       local?.liked ?? false,
-        reposted:    local?.reposted ?? false,
-        coverImage:  st.coverImage || local?.coverImage,
-        waveform:    local?.waveform || st.waveform || genWave(st.id.charCodeAt(2)||42),
+      const localMap = new Map(prev.map(t => [t.id, t]));
+      const merged: Track[] = serverTracks.map((s: Track) => {
+        const local = localMap.get(s.id);
+        return {
+          ...s,
+          audioUrl:    local?.audioUrl,
+          serverAudio: s.serverAudio || local?.serverAudio,
+          liked:       lk.has(s.id),
+          reposted:    rp.has(s.id),
+          coverImage:  s.coverImage || local?.coverImage,
+          waveform:    local?.waveform || s.waveform || genWave(s.id.charCodeAt(2)||42),
+          comments:    s.comments || [],
+        };
       });
+      // Keep local-only tracks not yet synced to server
+      for (const lt of prev) {
+        if (!serverTracks.some((s: Track) => s.id === lt.id)) merged.unshift(lt);
+      }
+      return merged;
     });
-    return st;
   }, []);
 
-  // ─── WEBSOCKET ─────────────────────────────────────────────────────────────
-  const connectWs=useCallback(()=>{
-    if(!WS_URL) return;
+  // ─── WEBSOCKET ──────────────────────────────────────────────────────────────
+  const connectWs = useCallback(() => {
+    if (!WS_URL) return;
     try {
-      const ws=new WebSocket(WS_URL);
-      wsRef.current=ws;
-      ws.onopen=()=>{
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+      ws.onopen = () => {
         setOnline(true);
-        const u=loadJson<User|null>(LS_USER,null);
-        ws.send(JSON.stringify({type:'INIT',userId:u?.id}));
+        const u = loadJson<User|null>(LS_USER, null);
+        ws.send(JSON.stringify({type:'INIT', userId: u?.id}));
       };
-      ws.onmessage=(ev)=>{
-        let msg:Record<string,unknown>;
-        try{msg=JSON.parse(ev.data);}catch{return;}
-        switch(msg.type){
-          case 'STATE':{
-            const st=(msg.tracks as Track[])||[];
-            setServerUsers((msg.users as ServerUser[])||[]);
-            setTracks(prev=>{
-              const localMap=new Map(prev.map(t=>[t.id,t]));
-              const lk=new Set(loadJson<string[]>(LS_LIKED,[]));
-              const rp=new Set(loadJson<string[]>(LS_REPOST,[]));
-              return st.map((s:Track)=>{
-                const local=localMap.get(s.id);
-                return {
-                  ...s,
-                  audioUrl:    local?.audioUrl,
-                  serverAudio: s.serverAudio||local?.serverAudio,
-                  liked:       lk.has(s.id),
-                  reposted:    rp.has(s.id),
-                  coverImage:  s.coverImage||local?.coverImage,
-                  waveform:    local?.waveform||s.waveform||genWave(s.id.charCodeAt(2)||42),
-                };
-              });
-            });
+      ws.onmessage = (ev) => {
+        let msg: Record<string,unknown>;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        switch(msg.type) {
+          case 'STATE': {
+            const st = (msg.tracks as Track[]) || [];
+            setServerUsers((msg.users as ServerUser[]) || []);
+            mergeServerTracks(st);
             break;
           }
-          case 'TRACK_ADDED':{
-            const t=msg.track as Track;
-            setTracks(prev=>prev.some(x=>x.id===t.id)?prev:[t,...prev]);
+          case 'TRACK_ADDED': {
+            const t = msg.track as Track;
+            setTracks(prev => prev.some(x=>x.id===t.id) ? prev : [t, ...prev]);
             break;
           }
-          case 'TRACK_UPDATED':{
-            const upd=msg.track as Track;
-            setTracks(prev=>prev.map(t=>{
-              if(t.id!==upd.id) return t;
-              return {...upd,audioUrl:t.audioUrl,serverAudio:upd.serverAudio||t.serverAudio,liked:t.liked,reposted:t.reposted,coverImage:upd.coverImage||t.coverImage,waveform:t.waveform||upd.waveform};
+          case 'TRACK_UPDATED': {
+            const upd = msg.track as Track;
+            setTracks(prev => prev.map(t => {
+              if (t.id !== upd.id) return t;
+              return {...upd, audioUrl:t.audioUrl, serverAudio:upd.serverAudio||t.serverAudio, liked:t.liked, reposted:t.reposted, coverImage:upd.coverImage||t.coverImage, waveform:t.waveform||upd.waveform};
             }));
-            setCommentTrack(prev=>prev?.id===upd.id?{...prev,...upd,audioUrl:prev.audioUrl,coverImage:upd.coverImage||prev.coverImage}:prev);
+            setCommentTrack(prev => prev?.id===upd.id ? {...prev,...upd,audioUrl:prev.audioUrl,coverImage:upd.coverImage||prev.coverImage} : prev);
             break;
           }
-          case 'TRACK_DELETED':{
-            const tid=msg.trackId as string;
-            setTracks(prev=>prev.filter(t=>t.id!==tid));
-            setCurrentTrack(prev=>prev.id===tid?DUMMY_TRACK:prev);
-            if(commentTrack?.id===tid) setCommentTrack(null);
+          case 'TRACK_DELETED': {
+            const tid = msg.trackId as string;
+            setTracks(prev => prev.filter(t=>t.id!==tid));
+            setCurrentTrack(prev => prev.id===tid ? DUMMY_TRACK : prev);
+            if (commentTrack?.id===tid) setCommentTrack(null);
             break;
           }
-          case 'UPLOAD_OK':{
-            const {trackId,serverAudio,serverCover}=msg as {trackId:string;serverAudio?:string;serverCover?:string};
-            if(serverAudio||serverCover){
-              setTracks(prev=>prev.map(t=>t.id!==trackId?t:{
-                ...t,
-                serverAudio: serverAudio||t.serverAudio,
-                coverImage:  serverCover||t.coverImage,
-              }));
-              setCurrentTrack(prev=>prev.id!==trackId?prev:{...prev,serverAudio:serverAudio||prev.serverAudio,coverImage:serverCover||prev.coverImage});
+          case 'UPLOAD_OK': {
+            const {trackId,serverAudio,serverCover} = msg as {trackId:string;serverAudio?:string;serverCover?:string};
+            if (serverAudio||serverCover) {
+              setTracks(prev => prev.map(t => t.id!==trackId ? t : {...t, serverAudio:serverAudio||t.serverAudio, coverImage:serverCover||t.coverImage}));
+              setCurrentTrack(prev => prev.id!==trackId ? prev : {...prev, serverAudio:serverAudio||prev.serverAudio, coverImage:serverCover||prev.coverImage});
             }
             break;
           }
-          case 'USER_REGISTERED':case 'USER_UPDATED':{
-            const u=msg.user as ServerUser;
-            if(u) setServerUsers(prev=>[...prev.filter(x=>x.id!==u.id),u]);
+          case 'USER_REGISTERED': case 'USER_UPDATED': {
+            const u = msg.user as ServerUser;
+            if (u) setServerUsers(prev=>[...prev.filter(x=>x.id!==u.id),u]);
             break;
           }
-          case 'NOTIFICATION':{
-            const n=msg.notification as AppNotification;
-            if(!n) break;
+          case 'NOTIFICATION': {
+            const n = msg.notification as AppNotification;
+            if (!n) break;
             setNotifications(prev=>[...prev,{...n,read:false}]);
             notify(`${n.icon} ${n.text}`);
             break;
@@ -1411,136 +1494,133 @@ export function App() {
           default: break;
         }
       };
-      ws.onclose=()=>{setOnline(false);wsRef.current=null;reconnRef.current=setTimeout(connectWs,3000);};
-      ws.onerror=()=>ws.close();
-    } catch {reconnRef.current=setTimeout(connectWs,5000);}
+      ws.onclose = () => { setOnline(false); wsRef.current=null; reconnRef.current=setTimeout(connectWs,3000); };
+      ws.onerror = () => ws.close();
+    } catch { reconnRef.current=setTimeout(connectWs,5000); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[notify]);
+  },[notify, mergeServerTracks]);
 
-  // ─── HTTP POLLING (Vercel) ──────────────────────────────────────────────────
-  const pollServer=useCallback(async()=>{
+  // ─── HTTP POLLING ───────────────────────────────────────────────────────────
+  const pollServer = useCallback(async() => {
     try {
-      const data=await apiFetch('/api/state');
-      if(data.error){setOnline(false);return;}
+      const data = await apiFetch('/api/state');
+      if (data.error) { setOnline(false); return; }
       setOnline(true);
-      const serverTracks=(data.tracks as Track[])||[];
-      setServerUsers((data.users as ServerUser[])||[]);
-      setTracks(prev=>{
-        const localMap=new Map(prev.map((t:Track)=>[t.id,t]));
-        const lk=new Set(loadJson<string[]>(LS_LIKED,[]));
-        const rp=new Set(loadJson<string[]>(LS_REPOST,[]));
-        const merged:Track[]=serverTracks.map((s:Track)=>{
-          const local=localMap.get(s.id);
-          return {
-            ...s,
-            audioUrl:    local?.audioUrl,
-            serverAudio: s.serverAudio||local?.serverAudio,
-            liked:       lk.has(s.id),
-            reposted:    rp.has(s.id),
-            coverImage:  s.coverImage||local?.coverImage,
-            waveform:    local?.waveform||s.waveform||genWave(s.id.charCodeAt(2)||42),
-            comments:    s.comments||[],
-          };
-        });
-        // Keep local-only tracks not yet on server
-        for(const lt of prev){if(!serverTracks.some((s:Track)=>s.id===lt.id))merged.unshift(lt);}
-        return merged;
-      });
-    } catch {setOnline(false);}
-  },[]);
+      setServerUsers((data.users as ServerUser[]) || []);
+      mergeServerTracks((data.tracks as Track[]) || []);
+    } catch { setOnline(false); }
+  }, [mergeServerTracks]);
 
-  useEffect(()=>{
-    if(WS_URL){connectWs();}
-    else{pollServer();pollRef.current=setInterval(pollServer,5000);}
-    return ()=>{if(reconnRef.current)clearTimeout(reconnRef.current);wsRef.current?.close();if(pollRef.current)clearInterval(pollRef.current);};
-  },[connectWs,pollServer]);
+  useEffect(() => {
+    if (WS_URL) { connectWs(); }
+    else { pollServer(); pollRef.current=setInterval(pollServer, 5000); }
+    return () => {
+      if (reconnRef.current) clearTimeout(reconnRef.current);
+      wsRef.current?.close();
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [connectWs, pollServer]);
 
-  // ─── OBSERVERS ─────────────────────────────────────────────────────────────
-  useEffect(()=>{
-    const obs=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible');});},{threshold:0.05,rootMargin:'0px 0px -20px 0px'});
+  // ─── OBSERVERS ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const obs = new IntersectionObserver(entries=>{
+      entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible');});
+    },{threshold:0.05,rootMargin:'0px 0px -20px 0px'});
     document.querySelectorAll('.reveal').forEach(el=>obs.observe(el));
-    return()=>obs.disconnect();
+    return () => obs.disconnect();
   },[tracks]);
 
-  useEffect(()=>{
-    const ids=['hero','trending','genres','releases','why'];
-    const fn=()=>{const y=window.scrollY+80;for(const id of ids){const el=document.getElementById(id);if(el&&y>=el.offsetTop&&y<el.offsetTop+el.offsetHeight){setActiveSection(id);break;}}};
-    window.addEventListener('scroll',fn,{passive:true});fn();
-    return()=>window.removeEventListener('scroll',fn);
+  useEffect(() => {
+    const ids = ['hero','trending','genres','releases','why'];
+    const fn = () => {
+      const y = window.scrollY + 80;
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && y>=el.offsetTop && y<el.offsetTop+el.offsetHeight) { setActiveSection(id); break; }
+      }
+    };
+    window.addEventListener('scroll', fn, {passive:true}); fn();
+    return () => window.removeEventListener('scroll', fn);
   },[]);
 
-  const scrollTo=useCallback((id:string)=>{const el=document.getElementById(id);if(el){const top=el.getBoundingClientRect().top+window.scrollY-62;window.scrollTo({top,behavior:'smooth'});}},[]);
+  const scrollTo = useCallback((id: string) => {
+    const el = document.getElementById(id);
+    if (el) { const top=el.getBoundingClientRect().top+window.scrollY-62; window.scrollTo({top,behavior:'smooth'}); }
+  },[]);
 
   // ─── TRACK ACTIONS ──────────────────────────────────────────────────────────
-  const handlePlay=useCallback((track:Track)=>{
-    if(currentTrack.id===track.id){setIsPlaying(p=>!p);return;}
+  const handlePlay = useCallback((track: Track) => {
+    if (currentTrack.id===track.id) { setIsPlaying(p=>!p); return; }
     setCurrentTrack(track);
     setIsPlaying(true);
   },[currentTrack.id]);
 
-  const handleNext=useCallback(()=>{
-    if(!tracks.length) return;
-    const i=tracks.findIndex(t=>t.id===currentTrack.id);
+  const handleNext = useCallback(() => {
+    if (!tracks.length) return;
+    const i = tracks.findIndex(t=>t.id===currentTrack.id);
     setCurrentTrack(tracks[(i+1)%tracks.length]);
     setIsPlaying(true);
   },[tracks,currentTrack.id]);
 
-  const handlePrev=useCallback(()=>{
-    if(!tracks.length) return;
-    const i=tracks.findIndex(t=>t.id===currentTrack.id);
+  const handlePrev = useCallback(() => {
+    if (!tracks.length) return;
+    const i = tracks.findIndex(t=>t.id===currentTrack.id);
     setCurrentTrack(tracks[(i-1+tracks.length)%tracks.length]);
     setIsPlaying(true);
   },[tracks,currentTrack.id]);
 
-  const handleLike=useCallback(async(id:string)=>{
-    if(!user){notify('👆 Войди, чтобы ставить лайки');setModal('login');return;}
-    // Toggle liked state — persist to LS immediately so polls don't reset it
-    setLikedIds(prev=>{
-      const next=new Set(prev);
-      if(next.has(id)) next.delete(id); else next.add(id);
-      saveJson(LS_LIKED,[...next]);
+  const handleLike = useCallback(async(id: string) => {
+    if (!user) { notify('👆 Войди, чтобы ставить лайки'); setModal('login'); return; }
+    // Update liked set immediately — this prevents poll from resetting it
+    setLikedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      saveJson(LS_LIKED, [...next]);
       return next;
     });
-    setTracks(ts=>ts.map(t=>t.id===id?{...t,liked:!t.liked,likes:t.liked?t.likes-1:t.likes+1}:t));
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'LIKE',trackId:id,userId:user.id}));}
-    else{await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'LIKE',trackId:id,userId:user.id})});}
+    setTracks(ts => ts.map(t => t.id===id ? {...t, liked:!t.liked, likes:t.liked?t.likes-1:t.likes+1} : t));
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({type:'LIKE',trackId:id,userId:user.id}));
+    } else {
+      await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'LIKE',trackId:id,userId:user.id})});
+    }
   },[user,notify]);
 
-  const handleRepost=useCallback(async(id:string)=>{
-    if(!user){notify('👆 Войди, чтобы делать репосты');setModal('login');return;}
-    // Toggle reposted state — persist to LS immediately so polls don't reset it
-    setRepostedIds(prev=>{
-      const next=new Set(prev);
-      if(next.has(id)) next.delete(id); else next.add(id);
-      saveJson(LS_REPOST,[...next]);
+  const handleRepost = useCallback(async(id: string) => {
+    if (!user) { notify('👆 Войди, чтобы делать репосты'); setModal('login'); return; }
+    setRepostedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      saveJson(LS_REPOST, [...next]);
       return next;
     });
-    setTracks(ts=>ts.map(t=>t.id===id?{...t,reposted:!t.reposted,reposts:t.reposted?t.reposts-1:t.reposts+1}:t));
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'REPOST',trackId:id,userId:user.id}));}
-    else{await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'REPOST',trackId:id,userId:user.id})});}
+    setTracks(ts => ts.map(t => t.id===id ? {...t, reposted:!t.reposted, reposts:t.reposted?t.reposts-1:t.reposts+1} : t));
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({type:'REPOST',trackId:id,userId:user.id}));
+    } else {
+      await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'REPOST',trackId:id,userId:user.id})});
+    }
   },[user,notify]);
 
-  const handleDownload=useCallback((track:Track)=>{
-    // Prefer server URL (works on all devices), fallback to local blob
-    const url=track.serverAudio
+  const handleDownload = useCallback((track: Track) => {
+    const url = track.serverAudio
       ? `${window.location.origin}${track.serverAudio}`
       : track.audioUrl;
-    if(!url){notify('⚠️ Файл недоступен для скачивания');return;}
-    const a=document.createElement('a');a.href=url;a.download=`${track.artist} - ${track.title}.mp3`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    if (!url) { notify('⚠️ Файл недоступен для скачивания'); return; }
+    const a = document.createElement('a');
+    a.href=url; a.download=`${track.artist} - ${track.title}.mp3`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     notify(`⬇️ Скачивание: ${track.title}`);
   },[notify]);
 
-  const handleDeleteTrack=useCallback(async(trackId:string)=>{
-    if(!user) return;
-    if(!confirm('Удалить трек? Это действие нельзя отменить.')) return;
-    // Remove locally immediately
+  const handleDeleteTrack = useCallback(async(trackId: string) => {
+    if (!user) return;
+    if (!confirm('Удалить трек? Это действие нельзя отменить.')) return;
     setTracks(prev=>prev.filter(t=>t.id!==trackId));
     setUser(u=>u?{...u,tracksCount:Math.max(0,u.tracksCount-1)}:u);
-    if(currentTrack.id===trackId){setIsPlaying(false);setCurrentTrack(DUMMY_TRACK);}
-    if(commentTrack?.id===trackId) setCommentTrack(null);
-    // Remove on server
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){
+    if (currentTrack.id===trackId) { setIsPlaying(false); setCurrentTrack(DUMMY_TRACK); }
+    if (commentTrack?.id===trackId) setCommentTrack(null);
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({type:'DELETE_TRACK',trackId,userId:user.id}));
     } else {
       await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'DELETE_TRACK',trackId,userId:user.id})});
@@ -1548,112 +1628,109 @@ export function App() {
     notify('🗑️ Трек удалён');
   },[user,currentTrack.id,commentTrack?.id,notify]);
 
-  const handleUpdateTrack=useCallback((updated:Track)=>{
+  const handleUpdateTrack = useCallback((updated: Track) => {
     setTracks(ts=>ts.map(t=>t.id===updated.id?{...updated,audioUrl:t.audioUrl,serverAudio:updated.serverAudio||t.serverAudio,coverImage:updated.coverImage||t.coverImage}:t));
-    if(commentTrack?.id===updated.id) setCommentTrack(prev=>prev?{...updated,audioUrl:prev.audioUrl,coverImage:updated.coverImage||prev.coverImage}:prev);
-    if(currentTrack.id===updated.id) setCurrentTrack(prev=>({...updated,audioUrl:prev.audioUrl,serverAudio:updated.serverAudio||prev.serverAudio,coverImage:updated.coverImage||prev.coverImage}));
+    if (commentTrack?.id===updated.id) setCommentTrack(prev=>prev?{...updated,audioUrl:prev.audioUrl,coverImage:updated.coverImage||prev.coverImage}:prev);
+    if (currentTrack.id===updated.id) setCurrentTrack(prev=>({...updated,audioUrl:prev.audioUrl,serverAudio:updated.serverAudio||prev.serverAudio,coverImage:updated.coverImage||prev.coverImage}));
   },[commentTrack,currentTrack.id]);
 
-  void applyServerTrack;
-
-  const handleLogin=useCallback((u:User)=>{
+  const handleLogin = useCallback((u: User) => {
     setUser(u);
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'IDENTIFY',userId:u.id}));}
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({type:'IDENTIFY',userId:u.id}));
+    }
   },[]);
 
-  const handleLogout=useCallback(()=>{
-    audioEl.pause();audioEl.src='';
-    setIsPlaying(false);setUser(null);setCurrentTrack(DUMMY_TRACK);
+  const handleLogout = useCallback(() => {
+    audioEl.pause(); audioEl.src='';
+    setIsPlaying(false); setUser(null); setCurrentTrack(DUMMY_TRACK);
     notify('👋 Вы вышли из аккаунта');
   },[notify]);
 
-  // Upload: convert audio file to base64, send to server
-  const handleUpload=useCallback(async(track:Track, audioFile:File|null, coverBase64:string)=>{
-    const fullTrack={...track,artist:user?.name||'Артист',artistId:user?.id||''};
+  const handleUpload = useCallback(async(track: Track, audioFile: File|null, coverBase64: string) => {
+    const fullTrack = {...track, artist:user?.name||'Артист', artistId:user?.id||''};
 
-    // Create local blob URL for immediate playback
     let localBlobUrl: string|undefined;
-    if(audioFile){
-      localBlobUrl=URL.createObjectURL(audioFile);
-      fullTrack.audioUrl=localBlobUrl;
+    if (audioFile) {
+      localBlobUrl = URL.createObjectURL(audioFile);
+      fullTrack.audioUrl = localBlobUrl;
     }
 
     // Add to local state immediately for instant playback
-    setTracks(ts=>[fullTrack,...ts.filter(t=>t.id!==fullTrack.id)]);
-    setUser(u=>u?{...u,tracksCount:u.tracksCount+1}:u);
+    setTracks(ts => [fullTrack, ...ts.filter(t=>t.id!==fullTrack.id)]);
+    setUser(u => u ? {...u, tracksCount: u.tracksCount+1} : u);
     setCurrentTrack(fullTrack);
-    setTimeout(()=>setIsPlaying(true),150);
+    setTimeout(()=>setIsPlaying(true), 150);
 
-    // Upload audio to server as base64
+    // Convert to base64 and upload to server
     let audioData: string|undefined;
-    if(audioFile){
-      try { audioData=await fileToBase64(audioFile); } catch(e){ console.error('base64 error',e); }
+    if (audioFile) {
+      try { audioData = await fileToBase64(audioFile); } catch(e) { console.error('base64 error',e); }
     }
 
-    const trackForServer={...fullTrack,audioUrl:undefined};
+    const trackForServer = {...fullTrack, audioUrl: undefined};
 
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){
-      wsRef.current.send(JSON.stringify({
-        type:'UPLOAD_TRACK',
-        track:trackForServer,
-        audioData,
-        coverData:coverBase64||undefined,
-      }));
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({type:'UPLOAD_TRACK', track:trackForServer, audioData, coverData:coverBase64||undefined}));
     } else {
-      const res=await apiFetch('/api/track',{method:'POST',body:JSON.stringify({
-        track:trackForServer,
-        audioData,
-        coverData:coverBase64||undefined,
-      })});
-      // Update serverAudio URL if returned
-      if(res.serverAudio){
+      const res = await apiFetch('/api/track',{method:'POST',body:JSON.stringify({track:trackForServer, audioData, coverData:coverBase64||undefined})});
+      if (res.serverAudio) {
         setTracks(ts=>ts.map(t=>t.id===fullTrack.id?{...t,serverAudio:res.serverAudio,coverImage:res.serverCover||t.coverImage}:t));
         setCurrentTrack(prev=>prev.id===fullTrack.id?{...prev,serverAudio:res.serverAudio,coverImage:res.serverCover||prev.coverImage}:prev);
       }
     }
   },[user]);
 
-  const openUpload=useCallback(()=>{
-    if(!user){notify('👆 Войди, чтобы загружать треки');setModal('login');return;}
-    if(user.role!=='artist'){notify('🎤 Только артисты могут загружать треки');return;}
+  const openUpload = useCallback(() => {
+    if (!user) { notify('👆 Войди, чтобы загружать треки'); setModal('login'); return; }
+    if (user.role!=='artist') { notify('🎤 Только артисты могут загружать треки'); return; }
     setModal('upload');
   },[user,notify]);
 
-  const handleFollowToggle=useCallback(async(artistId:string)=>{
-    if(!user){notify('👆 Войди, чтобы подписаться');setModal('login');return;}
-    const isFol=followingIds.includes(artistId);
+  const handleFollowToggle = useCallback(async(artistId: string) => {
+    if (!user) { notify('👆 Войди, чтобы подписаться'); setModal('login'); return; }
+    const isFol = followingIds.includes(artistId);
     setFollowingIds(prev=>isFol?prev.filter(id=>id!==artistId):[...prev,artistId]);
-    if(WS_URL&&wsRef.current?.readyState===WebSocket.OPEN){wsRef.current.send(JSON.stringify({type:'FOLLOW',targetId:artistId,followerId:user.id}));}
-    else{await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'FOLLOW',targetId:artistId,followerId:user.id})});}
+    if (WS_URL&&wsRef.current?.readyState===WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({type:'FOLLOW',targetId:artistId,followerId:user.id}));
+    } else {
+      await apiFetch('/api/action',{method:'POST',body:JSON.stringify({type:'FOLLOW',targetId:artistId,followerId:user.id})});
+    }
     notify(isFol?'Отписка оформлена':'✓ Подписка оформлена');
   },[user,followingIds,notify]);
 
-  const handleNotifClick=useCallback((n:AppNotification)=>{
-    if(n.trackId){const track=tracks.find(t=>t.id===n.trackId);if(track){scrollTo('releases');setTimeout(()=>setCommentTrack(track),400);}}
+  const handleNotifClick = useCallback((n: AppNotification) => {
+    if (n.trackId) {
+      const track = tracks.find(t=>t.id===n.trackId);
+      if (track) { scrollTo('releases'); setTimeout(()=>setCommentTrack(track),400); }
+    }
   },[tracks,scrollTo]);
 
-  const handleSearchSubmit=useCallback((q:string)=>{setSearchQuery(q);setShowSearch(!!q.trim());},[]);
+  const handleSearchSubmit = useCallback((q: string) => {
+    setSearchQuery(q);
+    setShowSearch(!!q.trim());
+  },[]);
 
-  // Derived
-  const hasTracks=tracks.length>0;
-  const sortedByEng=[...tracks].sort((a,b)=>engScore(b)-engScore(a));
-  const trendingTracks=sortedByEng.slice(0,8);
-  const newTracks=[...tracks].slice(0,20);
-  const filteredTracks=selectedGenre?tracks.filter(t=>t.genre===selectedGenre):null;
+  // Derived data
+  const hasTracks = tracks.length > 0;
+  const sortedByEng = [...tracks].sort((a,b)=>engScore(b)-engScore(a));
+  const trendingTracks = sortedByEng.slice(0,8);
+  const newTracks = [...tracks].slice(0,20);
+  const filteredTracks = selectedGenre ? tracks.filter(t=>t.genre===selectedGenre) : null;
 
-  // Current track from state (always has latest audio URLs)
-  const playerTrack = tracks.find(t=>t.id===currentTrack.id)||currentTrack;
+  // Player track — always use latest from tracks array (has freshest serverAudio)
+  const playerTrack = tracks.find(t=>t.id===currentTrack.id) || currentTrack;
 
-  const resolvedProfileArtist=profileArtistId
-    ?(serverUsers.find(u=>u.id===profileArtistId)||(user?.id===profileArtistId?{id:user.id,name:user.name,email:user.email,role:user.role,tracksCount:user.tracksCount,followers:user.followers,verified:true,joinedAt:user.joinedAt}:null))
-    :null;
+  const resolvedProfileArtist = profileArtistId
+    ? (serverUsers.find(u=>u.id===profileArtistId) || (user?.id===profileArtistId ? {id:user.id,name:user.name,email:user.email,role:user.role,tracksCount:user.tracksCount,followers:user.followers,verified:true,joinedAt:user.joinedAt} : null))
+    : null;
 
-  const openArtistProfile=(artistId:string)=>setProfileArtistId(artistId);
+  const openArtistProfile = (artistId: string) => setProfileArtistId(artistId);
 
-  const WHY_CARDS=[
+  const WHY_CARDS = [
     {icon:'🛡️',title:'Только реальные люди',desc:'Верификация при регистрации. Никаких ботов и фейков.',color:'#8B5CF6'},
     {icon:'🎤',title:'Артисты и слушатели',desc:'Две роли — артист загружает треки, слушатель открывает музыку.',color:'#3B82F6'},
-    {icon:'🎧',title:'Высокое качество',desc:'Поддержка FLAC, WAV. Слушай в студийном качестве.',color:'#10B981'},
+    {icon:'🎧',title:'Высокое качество',desc:'MP3 до 320 kbps. Слушай в отличном качестве.',color:'#10B981'},
     {icon:'💬',title:'Ответы на комментарии',desc:'Полноценное общение под треками с системой ответов.',color:'#F59E0B'},
     {icon:'🔥',title:'Умные рекомендации',desc:'Треки с большей активностью автоматически попадают в тренды.',color:'#EC4899'},
   ];
@@ -1662,16 +1739,22 @@ export function App() {
     <div style={{minHeight:'100vh',background:'linear-gradient(160deg,#080812 0%,#0a0818 30%,#060610 70%,#080810 100%)',position:'relative'}}>
       <ParticleCanvas/>
       <Header
-        user={user} onOpenModal={t=>{if(t==='upload')openUpload();else setModal(t);}}
-        onLogout={handleLogout} activeSection={activeSection} onNavClick={scrollTo}
-        online={online} notifications={notifications}
+        user={user}
+        onOpenModal={t=>{ if(t==='upload') openUpload(); else setModal(t); }}
+        onOpenUpload={openUpload}
+        onLogout={handleLogout}
+        activeSection={activeSection}
+        onNavClick={scrollTo}
+        online={online}
+        notifications={notifications}
         onClearNotifs={()=>setNotifications([])}
         onMarkNotifsRead={()=>setNotifications(prev=>prev.map(n=>({...n,read:true})))}
-        onNotifClick={handleNotifClick} onSearchSubmit={handleSearchSubmit}
-        onOpenProfile={()=>{if(user)openArtistProfile(user.id);}}
+        onNotifClick={handleNotifClick}
+        onSearchSubmit={handleSearchSubmit}
+        onOpenProfile={()=>{ if(user) openArtistProfile(user.id); }}
       />
 
-      <main style={{paddingTop:62,paddingBottom:90,position:'relative',zIndex:1}}>
+      <main style={{paddingTop:62,paddingBottom:currentTrack.id!=='__dummy__'?90:20,position:'relative',zIndex:1}}>
         {/* HERO */}
         <section id="hero" style={{minHeight:'88vh',display:'flex',alignItems:'center',justifyContent:'center',padding:'clamp(50px,9vw,110px) 20px',overflow:'hidden'}}>
           <div style={{textAlign:'center',maxWidth:780}}>
@@ -1688,7 +1771,10 @@ export function App() {
             </p>
             <div className="fade-in-up-delay-2" style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap',marginBottom:38}}>
               <button onClick={()=>hasTracks?scrollTo('trending'):openUpload()} className="btn-glow" style={{border:'none',cursor:'pointer',padding:'13px 28px',borderRadius:100,fontSize:'0.95rem',fontWeight:700,color:'white',fontFamily:'Inter,sans-serif'}}>
-                <span style={{display:'flex',alignItems:'center',gap:7}}><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>{hasTracks?'Начать слушать':'Загрузить трек'}</span>
+                <span style={{display:'flex',alignItems:'center',gap:7}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
+                  {hasTracks?'Начать слушать':'Загрузить трек'}
+                </span>
               </button>
               <button onClick={()=>setModal('register')} style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',cursor:'pointer',padding:'13px 28px',borderRadius:100,fontSize:'0.95rem',fontWeight:700,color:'#f8fafc',fontFamily:'Inter,sans-serif',transition:'all 0.3s'}}
                 onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.1)';}} onMouseLeave={e=>{e.currentTarget.style.background='rgba(255,255,255,0.06)';}}>
@@ -1697,7 +1783,11 @@ export function App() {
             </div>
             <div className="fade-in-up-delay-3" style={{display:'flex',justifyContent:'center',marginBottom:38}}><AnimatedWave/></div>
             <div className="fade-in-up-delay-3" style={{display:'flex',gap:36,justifyContent:'center',flexWrap:'wrap'}}>
-              {[[String(tracks.length),'Треков'],[String(new Set(tracks.map(t=>t.artistId).filter(Boolean)).size),'Артистов'],[fmtNum(tracks.reduce((s,t)=>s+t.plays,0)),'Прослушиваний']].map(([n,l])=>(
+              {[
+                [String(tracks.length),'Треков'],
+                [String(new Set(tracks.map(t=>t.artistId).filter(Boolean)).size),'Артистов'],
+                [fmtNum(tracks.reduce((s,t)=>s+t.plays,0)),'Прослушиваний'],
+              ].map(([n,l])=>(
                 <div key={l} style={{textAlign:'center'}}>
                   <div className="stat-number" style={{fontSize:'1.7rem'}}>{n}</div>
                   <div style={{fontSize:'0.75rem',color:'#475569',fontWeight:500}}>{l}</div>
@@ -1716,7 +1806,7 @@ export function App() {
                 <h2 style={{fontSize:'clamp(1.3rem,2.8vw,1.85rem)',fontWeight:800,color:'#f8fafc',letterSpacing:'-0.5px'}}>Популярные треки</h2>
                 <div style={{fontSize:'0.72rem',color:'#475569',marginTop:3}}>По активности: лайки, репосты, комментарии</div>
               </div>
-              {hasTracks&&<button onClick={()=>scrollTo('releases')} style={{background:'rgba(139,92,246,0.08)',border:'1px solid rgba(139,92,246,0.18)',borderRadius:100,padding:'6px 16px',cursor:'pointer',color:'#a78bfa',fontWeight:600,fontSize:'0.78rem',fontFamily:'Inter,sans-serif',transition:'all 0.2s'}} onMouseEnter={e=>(e.currentTarget.style.background='rgba(139,92,246,0.15)')} onMouseLeave={e=>(e.currentTarget.style.background='rgba(139,92,246,0.08)')}>Все треки →</button>}
+              {hasTracks&&<button onClick={()=>scrollTo('releases')} style={{background:'rgba(139,92,246,0.08)',border:'1px solid rgba(139,92,246,0.18)',borderRadius:100,padding:'6px 16px',cursor:'pointer',color:'#a78bfa',fontWeight:600,fontSize:'0.78rem',fontFamily:'Inter,sans-serif'}} onMouseEnter={e=>(e.currentTarget.style.background='rgba(139,92,246,0.15)')} onMouseLeave={e=>(e.currentTarget.style.background='rgba(139,92,246,0.08)')}>Все треки →</button>}
             </div>
             {hasTracks?(
               <div className="reveal horizontal-scroll" style={{display:'flex',gap:12}}>
@@ -1744,7 +1834,7 @@ export function App() {
             </div>
             <div className="reveal" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))',gap:9}}>
               {GENRES.map(g=>{
-                const count=tracks.filter(t=>t.genre===g.name).length;
+                const count = tracks.filter(t=>t.genre===g.name).length;
                 return (
                   <div key={g.name} className="genre-card glass" onClick={()=>{setSelectedGenre(g.name===selectedGenre?null:g.name);scrollTo('releases');}}
                     style={{borderRadius:14,padding:'18px 10px',textAlign:'center',border:`1px solid ${selectedGenre===g.name?'rgba(139,92,246,0.5)':'rgba(255,255,255,0.06)'}`,position:'relative',overflow:'hidden',cursor:'pointer',transition:'border-color 0.2s'}}>
@@ -1759,7 +1849,7 @@ export function App() {
           </div>
         </section>
 
-        {/* NEW RELEASES */}
+        {/* RELEASES */}
         <section id="releases" style={{padding:'clamp(44px,6vw,80px) 0'}}>
           <div style={{maxWidth:1280,margin:'0 auto',padding:'0 20px'}}>
             <div className="reveal" style={{marginBottom:22}}>
@@ -1841,9 +1931,12 @@ export function App() {
                   <div style={{fontWeight:700,color:'#f8fafc',fontSize:'0.83rem',marginBottom:11}}>{col.title}</div>
                   <div style={{display:'flex',flexDirection:'column',gap:7}}>
                     {col.links.map(l=>{
-                      const sm:Record<string,string>={'Главная':'hero','В тренде':'trending','Жанры':'genres','Новинки':'releases'};
+                      const sm: Record<string,string>={'Главная':'hero','В тренде':'trending','Жанры':'genres','Новинки':'releases','Загрузить трек':'upload'};
                       const sid=sm[l];
-                      return <span key={l} style={{fontSize:'0.76rem',color:'#475569',cursor:sid?'pointer':'default',transition:'color 0.2s'}} onClick={()=>sid&&scrollTo(sid)} onMouseEnter={e=>((e.target as HTMLElement).style.color=sid?'#a78bfa':'#475569')} onMouseLeave={e=>((e.target as HTMLElement).style.color='#475569')}>{l}</span>;
+                      return <span key={l} style={{fontSize:'0.76rem',color:'#475569',cursor:sid?'pointer':'default',transition:'color 0.2s'}}
+                        onClick={()=>{if(sid==='upload')openUpload();else if(sid)scrollTo(sid);}}
+                        onMouseEnter={e=>((e.target as HTMLElement).style.color=sid?'#a78bfa':'#475569')}
+                        onMouseLeave={e=>((e.target as HTMLElement).style.color='#475569')}>{l}</span>;
                     })}
                   </div>
                 </div>
@@ -1863,7 +1956,7 @@ export function App() {
         </footer>
       </main>
 
-      {/* FIXED PLAYER */}
+      {/* PLAYER */}
       <PlayerBar
         track={playerTrack} isPlaying={isPlaying}
         onPlayPause={()=>setIsPlaying(p=>!p)}
@@ -1900,7 +1993,7 @@ export function App() {
       )}
 
       {/* TOASTS */}
-      <div style={{position:'fixed',top:74,right:16,zIndex:400,display:'flex',flexDirection:'column',gap:8,pointerEvents:'none',maxWidth:'calc(100vw - 32px)'}}>
+      <div style={{position:'fixed',top:74,right:16,zIndex:500,display:'flex',flexDirection:'column',gap:8,pointerEvents:'none',maxWidth:'calc(100vw - 32px)'}}>
         {toasts.map(t=><Toast key={t.id} msg={t.msg} onDone={()=>removeToast(t.id)}/>)}
       </div>
     </div>
