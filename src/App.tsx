@@ -85,6 +85,24 @@ const WS_URL = (() => {
 const fmtNum  = (n: number) => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+'M' : n >= 1_000 ? (n/1_000).toFixed(1)+'K' : String(n);
 const fmtTime = (s: number) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 const engScore = (t: Track) => t.likes*3 + t.reposts*5 + t.comments.length*4 + t.plays*0.1;
+
+// Real time-ago using ISO timestamps
+const timeAgo = (ts: string): string => {
+  if (!ts) return '';
+  const date = new Date(ts);
+  if (isNaN(date.getTime())) return ts; // fallback for non-ISO strings
+  const diff = Date.now() - date.getTime();
+  const s = Math.floor(diff / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const d = Math.floor(h / 24);
+  if (s < 60)  return 'только что';
+  if (m < 60)  return `${m} мин назад`;
+  if (h < 24)  return `${h} ч назад`;
+  if (d === 1) return 'вчера';
+  if (d < 7)   return `${d} дн назад`;
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+};
 const genWave  = (seed: number): number[] =>
   Array.from({length:60},(_,i) => Math.max(10, Math.min(90, Math.abs(Math.sin(i*0.4+seed)*0.5+Math.sin(i*0.8+seed*2)*0.3+Math.sin(i*0.2)*0.2)*100+20)));
 
@@ -470,7 +488,8 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!uploading)onClose();};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn);},[onClose,uploading]);
 
   const handleFile=(f:File)=>{
-    if(!f.type.startsWith('audio/')&&!/\.(mp3|wav|flac|ogg|aac|m4a)$/i.test(f.name)){setErrors({file:'Только аудио: MP3, WAV, FLAC, OGG, AAC, M4A'});return;}
+    const isMp3=f.type==='audio/mpeg'||f.type==='audio/mp3'||f.name.toLowerCase().endsWith('.mp3');
+    if(!isMp3){setErrors({file:'Только MP3 файлы. Конвертируй трек в MP3 перед загрузкой.'});return;}
     setErrors({}); setFile(f);
     if(!title) setTitle(f.name.replace(/\.[^.]+$/,'').replace(/[-_]/g,' '));
     const url=URL.createObjectURL(f);
@@ -511,7 +530,7 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
       id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2),
       title:title.trim(), artist:userName, artistId:userId, genre,
       plays:0, likes:0, reposts:0, duration:duration||'?:??',
-      uploadDate:'только что',
+      uploadDate:new Date().toISOString(),
       coverGradient:GRADIENTS[Math.floor(Math.random()*GRADIENTS.length)],
       coverImage:coverPreview||undefined,
       verified:true, isNew:true, description:description||'',
@@ -580,11 +599,11 @@ function UploadModal({onClose,onUpload,onNotify,userName,userId,onlineMode,wsRef
               onDrop={e=>{e.preventDefault();setIsDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);}}
               onClick={()=>fileRef.current?.click()}
               style={{borderRadius:14,padding:'22px 16px',textAlign:'center',cursor:'pointer',marginBottom:12,background:isDragOver?'rgba(139,92,246,0.1)':'rgba(255,255,255,0.02)',border:`2px dashed ${isDragOver?'rgba(139,92,246,0.6)':errors.file?'rgba(239,68,68,0.4)':'rgba(255,255,255,0.1)'}`,transition:'all 0.2s'}}>
-              <input ref={fileRef} type="file" accept="audio/*,.mp3,.wav,.flac,.ogg,.aac,.m4a" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f);e.target.value='';}}/>
+              <input ref={fileRef} type="file" accept=".mp3,audio/mpeg" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f);e.target.value='';}}/>
               <div style={{width:44,height:44,borderRadius:11,background:'rgba(139,92,246,0.1)',border:'1px solid rgba(139,92,246,0.25)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 10px'}}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               </div>
-              {file?(<div><div style={{fontSize:'0.87rem',fontWeight:700,color:'#a78bfa',marginBottom:3}}>✓ {file.name}</div>{duration&&<div style={{fontSize:'0.72rem',color:'#64748b'}}>Длительность: {duration}</div>}</div>):(<div><div style={{fontSize:'0.85rem',fontWeight:600,color:'#f8fafc',marginBottom:4}}>Перетащи или выбери аудио</div><div style={{fontSize:'0.72rem',color:'#475569'}}>MP3, WAV, FLAC, OGG, AAC, M4A</div></div>)}
+              {file?(<div><div style={{fontSize:'0.87rem',fontWeight:700,color:'#a78bfa',marginBottom:3}}>✓ {file.name}</div>{duration&&<div style={{fontSize:'0.72rem',color:'#64748b'}}>Длительность: {duration}</div>}</div>):(<div><div style={{fontSize:'0.85rem',fontWeight:600,color:'#f8fafc',marginBottom:4}}>Перетащи или выбери MP3</div><div style={{fontSize:'0.72rem',color:'#475569'}}>Только формат MP3</div></div>)}
             </div>
             {errors.file&&<div style={{color:'#EF4444',fontSize:'0.76rem',marginBottom:9,marginTop:-6}}>{errors.file}</div>}
 
@@ -642,7 +661,7 @@ function CommentsModal({track,user,onClose,onUpdateTrack,onRequestLogin,onlineMo
     const c:Comment={
       id:'c_'+Date.now()+'_'+Math.random().toString(36).slice(2),
       userId:user.id,userName:user.name,userAvatar:user.avatar,
-      text:text.trim(),timestamp:'только что',likes:0,liked:false,
+      text:text.trim(),timestamp:new Date().toISOString(),likes:0,liked:false,
       isAuthor:user.id===track.artistId,
       replyTo:replyTo||undefined,
     };
@@ -703,7 +722,7 @@ function CommentsModal({track,user,onClose,onUpdateTrack,onRequestLogin,onlineMo
                       <VerifiedIcon size={6}/> Автор
                     </span>
                   )}
-                  <span style={{fontSize:'0.62rem',color:'#475569'}}>{c.timestamp}</span>
+                  <span style={{fontSize:'0.62rem',color:'#475569'}}>{timeAgo(c.timestamp)}</span>
                 </div>
                 {c.replyTo&&(
                   <div style={{background:'rgba(139,92,246,0.08)',borderLeft:'2px solid rgba(139,92,246,0.4)',borderRadius:'0 6px 6px 0',padding:'4px 9px',marginBottom:5}}>
@@ -1177,7 +1196,7 @@ function ReleaseRow({track,isCurrentPlaying,onPlay,onLike,onRepost,onComment,onD
           <span style={{color:'#334155'}}>·</span>
           <span style={{background:'rgba(139,92,246,0.1)',color:'#a78bfa',padding:'1px 5px',borderRadius:100,fontSize:'0.59rem',fontWeight:600}}>{track.genre}</span>
           <span style={{color:'#334155'}}>·</span>
-          <span>{track.uploadDate}</span>
+          <span>{timeAgo(track.uploadDate)}</span>
         </div>
       </div>
       <div className="hide-mobile"><Waveform bars={track.waveform.slice(0,24)} small/></div>

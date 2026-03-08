@@ -29,7 +29,7 @@ const __dirname  = dirname(__filename);
 const PORT      = parseInt(process.env.PORT || '3000', 10);
 const HOST      = '0.0.0.0';
 const MONGO_URL = process.env.MONGO_URL || process.env.MONGODB_URL || process.env.DATABASE_URL || '';
-const BOT_SECRET = process.env.BOT_SECRET || randomBytes(32).toString('hex');
+
 
 // ── Auto-build ────────────────────────────────────────────────────────────────
 const DIST = join(__dirname, 'dist', 'index.html');
@@ -729,10 +729,18 @@ function saveCover(trackId, base64Data) {
     return `/api/cover/${trackId}`;
   } catch (e) { console.error('[Cover] Save error:', e.message); return null; }
 }
+import { unlinkSync } from 'fs';
+
 function deleteAudio(trackId) {
   try {
-    const { unlinkSync } = await import('fs').catch(() => ({ unlinkSync: () => {} }));
     const f = join(AUDIO_DIR, `${trackId}.bin`);
+    if (existsSync(f)) unlinkSync(f);
+  } catch { /**/ }
+}
+
+function deleteCover(trackId) {
+  try {
+    const f = join(COVERS_DIR, `${trackId}.bin`);
     if (existsSync(f)) unlinkSync(f);
   } catch { /**/ }
 }
